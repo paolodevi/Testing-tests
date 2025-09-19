@@ -1,1 +1,116 @@
 # Testing-tests
+
+function shapeDTW_match_peaks
+    % Example: Matching peaks in two gain vs frequency curves
+    % using shapeDTW (local descriptor + DTW)
+
+    %-----------------------------
+    % 1. Define two example curves
+    %-----------------------------
+    f = linspace(0, 100, 500); % frequency axis
+    
+    % Curve 1: three modes
+    g1 = 1 + ...
+         5*exp(-0.5*((f-20)/2).^2) + ...
+         3*exp(-0.5*((f-50)/3).^2) + ...
+         4*exp(-0.5*((f-75)/4).^2);
+
+    % Curve 2: similar peaks but shifted
+    g2 = 1 + ...
+         4.5*exp(-0.5*((f-22)/2).^2) + ...
+         3.5*exp(-0.5*((f-53)/3).^2) + ...
+         3.8*exp(-0.5*((f-73)/4).^2);
+
+    % Add some noise to second curve
+    g2 = g2 + 0.05*randn(size(g2));
+
+    %--------------------------------------
+    % 2. Build local shape descriptors
+    %--------------------------------------
+    w = 15; % neighborhood half-width
+    desc1 = localDescriptor(g1, w);
+    desc2 = localDescriptor(g2, w);
+
+    %--------------------------------------
+    % 3. Run DTW on descriptors
+    %--------------------------------------
+    [dist,ix,iy] = dtw(desc1', desc2'); % MATLAB Signal Processing Toolbox
+
+    %--------------------------------------
+    % 4. Detect peaks in both curves
+    %--------------------------------------
+    [pks1,locs1] = findpeaks(g1,f,'MinPeakProminence',1);
+    [pks2,locs2] = findpeaks(g2,f,'MinPeakProminence',1);
+
+    % Map peaks of curve1 to curve2 using DTW path
+    matchedPeaks = [];
+    for i = 1:length(locs1)
+        % find nearest DTW match for this index
+        [~, idx] = min(abs(ix - find(f==locs1(i))));
+        matchedIdx = iy(idx);
+        [~, nearestPeak] = min(abs(locs2 - f(matchedIdx)));
+        matchedPeaks(i,:) = [locs1(i), locs2(nearestPeak)];
+    end
+
+    %--------------------------------------
+    % 5. Plot results
+    %--------------------------------------
+    figure;
+    subplot(2,1,1);
+    plot(f,g1,'b','LineWidth',1.5); hold on;
+    plot(f,g2,'r','LineWidth',1.5);
+    plot(locs1,pks1,'bo','MarkerFaceColor','b');
+    plot(locs2,pks2,'ro','MarkerFaceColor','r');
+
+    % draw lines between matched peaks
+    for i = 1:size(matchedPeaks,1)
+        x1 = matchedPeaks(i,1);
+        x2 = matchedPeaks(i,2);
+        y1 = interp1(f,g1,x1);
+        y2 = interp1(f,g2,x2);
+        plot([x1,x2],[y1,y2],'k--','LineWidth',1);
+    end
+
+    title('Gain vs Frequency Curves with Matched Peaks');
+    xlabel('Frequency (Hz)');
+    ylabel('Gain');
+    legend('Curve 1','Curve 2','Peaks 1','Peaks 2');
+    grid on;
+
+    subplot(2,1,2);
+    plot(ix,iy,'k.-');
+    title('shapeDTW Alignment Path (Index space)');
+    xlabel('Curve 1 indices');
+    ylabel('Curve 2 indices');
+    grid on;
+
+    fprintf('shapeDTW distance = %.3f\n',dist);
+    disp('Matched peaks (Hz): [Curve1 , Curve2]');
+    disp(matchedPeaks);
+end
+
+%--------------------------------------
+% Helper: local shape descriptor
+%--------------------------------------
+function D = localDescriptor(signal, w)
+    % For each point, take a local window and compute derivative pattern
+    N = length(signal);
+    D = zeros(3,N); % descriptor dimension (mean, slope, curvature)
+    
+    for i = 1:N
+        left  = max(1, i-w);
+        right = min(N, i+w);
+        win = signal(left:right);
+
+        % Normalize window
+        win = win - mean(win);
+
+        % Features: mean (0), slope, curvature
+        x = (left:right) - i;
+        p = polyfit(x,win,2); % quadratic fit
+        slope = p(2);
+        curvature = p(1);
+
+        D(:,i) = [mean(win); slope; curvature];
+    end
+end
