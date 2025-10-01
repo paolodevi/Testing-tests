@@ -1,37 +1,38 @@
-% --- Load your experimental data ---
-% Example: assume you have vectors t (time) and y (signal)
-% Replace with your actual data
-t = linspace(0,10,200); 
-y = sin(2*pi*0.5*t) + 0.2*randn(size(t)); % synthetic test signal with noise
+%% Example data (replace with your own)
+t = linspace(0,10,200);
+y = sin(2*pi*0.5*t) + 0.2*randn(size(t)); % noisy sine
+figure; plot(t,y,'k--'); title('Raw Signal'); grid on;
 
-dt = mean(diff(t));   % average sampling interval
-fs = 1/dt;            % sampling frequency
+%% Define options
+wavelets = {'db4','sym8','coif5'}; % test different wavelets
+levels   = [2 4 6];                % decomposition levels
+methods  = {'UniversalThreshold','MinimaxThreshold'};
+rules    = {'Soft','Hard'};
 
-%% --- 1. Butterworth low-pass filter ---
-fc = 0.8; % cutoff frequency in Hz (tune this!)
-[b,a] = butter(4, fc/(fs/2), 'low');
-y_butter = filtfilt(b, a, y);
-
-%% --- 2. Savitzky-Golay filter ---
-frame = 15;   % must be odd
-order = 3;
-y_sgolay = sgolayfilt(y, order, frame);
-
-%% --- 3. Wavelet denoising ---
-y_wavelet = wdenoise(y, 4); % 4 decomposition levels
-
-%% --- 4. Moving average filter ---
-window = 11;  % number of samples
-y_movavg = movmean(y, window);
-
-%% --- Plot comparison ---
+%% Loop over all combinations
 figure;
-plot(t, y, 'k--', 'DisplayName','Raw data'); hold on;
-plot(t, y_butter, 'r-', 'LineWidth',1.5, 'DisplayName','Butterworth LPF');
-plot(t, y_sgolay, 'b-', 'LineWidth',1.5, 'DisplayName','Savitzky-Golay');
-plot(t, y_wavelet, 'm-', 'LineWidth',1.5, 'DisplayName','Wavelet denoise');
-plot(t, y_movavg, 'g-', 'LineWidth',1.5, 'DisplayName','Moving average');
+plotIdx = 1;
+for w = 1:length(wavelets)
+    for L = levels
+        for m = 1:length(methods)
+            for r = 1:length(rules)
+                % Apply wavelet denoising
+                y_denoised = wdenoise(y,L, ...
+                    'Wavelet',wavelets{w}, ...
+                    'DenoisingMethod',methods{m}, ...
+                    'ThresholdRule',rules{r});
+                
+                % Plot result
+                subplot(length(wavelets), length(levels), plotIdx);
+                plot(t,y,'k--','DisplayName','Raw'); hold on;
+                plot(t,y_denoised,'r','LineWidth',1.2,'DisplayName','Denoised');
+                title(sprintf('%s | L=%d | %s-%s', ...
+                    wavelets{w},L,methods{m}(1:3),rules{r}(1:1)));
+                axis tight; grid on;
+                plotIdx = plotIdx + 1;
+            end
+        end
+    end
+end
 
-xlabel('Time'); ylabel('Signal');
-title('Filtering Comparison');
-legend('show'); grid on;
+sgtitle('Wavelet Denoising Comparisons');
