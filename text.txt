@@ -1,42 +1,37 @@
-function recolor_lines(targetColor, cmapName)
-% RECOLOR_LINES   Cambia il colore delle linee con un certo colore in una colormap.
-%
-%   recolor_lines(targetColor, cmapName)
-%
-%   targetColor : colore da sostituire (es. [0 0 1] per blu)
-%   cmapName    : stringa colormap (es. 'jet', 'parula', 'hsv', ecc.)
-%
-%   Esempio:
-%       plot(rand(10,1), 'b'); hold on;
-%       plot(rand(10,1), 'b');
-%       plot(rand(10,1), 'Color', [0.5 0 0.5]); % viola, resta invariata
-%       recolor_lines([0 0 1], 'jet');
+% --- Load your experimental data ---
+% Example: assume you have vectors t (time) and y (signal)
+% Replace with your actual data
+t = linspace(0,10,200); 
+y = sin(2*pi*0.5*t) + 0.2*randn(size(t)); % synthetic test signal with noise
 
-    if nargin < 2
-        cmapName = 'jet'; % default
-    end
+dt = mean(diff(t));   % average sampling interval
+fs = 1/dt;            % sampling frequency
 
-    % Trova tutte le linee nell'axes corrente
-    h = findall(gca, 'Type', 'Line');
+%% --- 1. Butterworth low-pass filter ---
+fc = 0.8; % cutoff frequency in Hz (tune this!)
+[b,a] = butter(4, fc/(fs/2), 'low');
+y_butter = filtfilt(b, a, y);
 
-    % Filtra quelle col colore target
-    mask = arrayfun(@(x) isequal(get(x,'Color'), targetColor), h);
-    h_sel = h(mask);
+%% --- 2. Savitzky-Golay filter ---
+frame = 15;   % must be odd
+order = 3;
+y_sgolay = sgolayfilt(y, order, frame);
 
-    % Se non ce ne sono, esci
-    if isempty(h_sel)
-        warning('Nessuna linea trovata con il colore specificato.');
-        return;
-    end
+%% --- 3. Wavelet denoising ---
+y_wavelet = wdenoise(y, 4); % 4 decomposition levels
 
-    % Applica la colormap
-    n = numel(h_sel);
-    cmap = feval(cmapName, n);
+%% --- 4. Moving average filter ---
+window = 11;  % number of samples
+y_movavg = movmean(y, window);
 
-    % MATLAB restituisce gli handle in ordine inverso -> flipud
-    h_sel = flipud(h_sel);
+%% --- Plot comparison ---
+figure;
+plot(t, y, 'k--', 'DisplayName','Raw data'); hold on;
+plot(t, y_butter, 'r-', 'LineWidth',1.5, 'DisplayName','Butterworth LPF');
+plot(t, y_sgolay, 'b-', 'LineWidth',1.5, 'DisplayName','Savitzky-Golay');
+plot(t, y_wavelet, 'm-', 'LineWidth',1.5, 'DisplayName','Wavelet denoise');
+plot(t, y_movavg, 'g-', 'LineWidth',1.5, 'DisplayName','Moving average');
 
-    for i = 1:n
-        set(h_sel(i), 'Color', cmap(i,:));
-    end
-end
+xlabel('Time'); ylabel('Signal');
+title('Filtering Comparison');
+legend('show'); grid on;
