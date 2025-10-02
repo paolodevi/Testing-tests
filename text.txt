@@ -1,3 +1,56 @@
+function plot_mac3Dbar(MAC, freqPhi, freqPsi)
+% PLOT_MAC3DBAR  3D bar visualization of MAC matrix with frequencies on axes.
+%
+%   plot_mac3Dbar(MAC, freqPhi, freqPsi)
+%
+% INPUT:
+%   MAC     : nPhi x nPsi MAC matrix (values 0..1)
+%   freqPhi : vector of frequencies (Hz) for Phi modes (length nPhi)
+%   freqPsi : vector of frequencies (Hz) for Psi modes (length nPsi)
+%
+% Example:
+%   plot_mac3Dbar(MAC, freqPhi, freqPsi);
+
+    if nargin < 2 || isempty(freqPhi)
+        freqPhi = 1:size(MAC,1);
+    end
+    if nargin < 3 || isempty(freqPsi)
+        freqPsi = 1:size(MAC,2);
+    end
+
+    figure;
+    % bar3 plots each row along X, so we transpose MAC for alignment
+    h = bar3(freqPhi, MAC);
+
+    colormap(parula);
+    colorbar;
+    caxis([0 1]);
+
+    % Adjust colors of bars individually
+    for k = 1:length(h)
+        zdata = get(h(k),'ZData');
+        cdata = zdata;
+        set(h(k),'CData',cdata, 'FaceColor','interp');
+    end
+
+    xlabel('Psi modes frequency [Hz]');
+    ylabel('Phi modes frequency [Hz]');
+    zlabel('MAC value');
+    title('3D MAC Bar Plot');
+
+    % Use actual Psi frequencies as X tick labels
+    xticks(1:length(freqPsi));
+    xticklabels(arrayfun(@(f) sprintf('%.2f',f), freqPsi, 'UniformOutput', false));
+    xtickangle(45);
+
+    yticks(freqPhi);
+    yticklabels(arrayfun(@(f) sprintf('%.2f',f), freqPhi, 'UniformOutput', false));
+
+    zlim([0 1]);
+    grid on;
+    view(-35,30); % good perspective
+end
+
 function plot_mac3D(MAC, freqPhi, freqPsi)
 % PLOT_MAC3D  3D visualization of MAC matrix with frequencies as axes.
 %
