@@ -1,38 +1,59 @@
-%% Example data (replace with your own)
-t = linspace(0,10,200);
-y = sin(2*pi*0.5*t) + 0.2*randn(size(t)); % noisy sine
-figure; plot(t,y,'k--'); title('Raw Signal'); grid on;
+function plot_mac(MAC, freqPhi, freqPsi, showValues)
+% PLOT_MAC  Visualize the MAC matrix as a heatmap with frequencies on axes.
+%
+%   plot_mac(MAC, freqPhi, freqPsi, showValues)
+%
+% INPUT:
+%   MAC        : nPhi x nPsi MAC matrix (values between 0 and 1)
+%   freqPhi    : (optional) vector of frequencies (Hz) for Phi modes (length = nPhi)
+%   freqPsi    : (optional) vector of frequencies (Hz) for Psi modes (length = nPsi)
+%   showValues : (optional) true/false, if true prints MAC values in cells (default = false)
+%
+% Example:
+%   plot_mac(MAC, freqPhi, freqPsi, true);
 
-%% Define options
-wavelets = {'db4','sym8','coif5'}; % test different wavelets
-levels   = [2 4 6];                % decomposition levels
-methods  = {'UniversalThreshold','MinimaxThreshold'};
-rules    = {'Soft','Hard'};
+    if nargin < 2 || isempty(freqPhi)
+        freqPhi = 1:size(MAC,1);
+    end
+    if nargin < 3 || isempty(freqPsi)
+        freqPsi = 1:size(MAC,2);
+    end
+    if nargin < 4
+        showValues = false;
+    end
 
-%% Loop over all combinations
-figure;
-plotIdx = 1;
-for w = 1:length(wavelets)
-    for L = levels
-        for m = 1:length(methods)
-            for r = 1:length(rules)
-                % Apply wavelet denoising
-                y_denoised = wdenoise(y,L, ...
-                    'Wavelet',wavelets{w}, ...
-                    'DenoisingMethod',methods{m}, ...
-                    'ThresholdRule',rules{r});
-                
-                % Plot result
-                subplot(length(wavelets), length(levels), plotIdx);
-                plot(t,y,'k--','DisplayName','Raw'); hold on;
-                plot(t,y_denoised,'r','LineWidth',1.2,'DisplayName','Denoised');
-                title(sprintf('%s | L=%d | %s-%s', ...
-                    wavelets{w},L,methods{m}(1:3),rules{r}(1:1)));
-                axis tight; grid on;
-                plotIdx = plotIdx + 1;
+    % Make sure freq vectors are row/col
+    freqPhi = freqPhi(:);
+    freqPsi = freqPsi(:);
+
+    figure;
+    imagesc(freqPsi, freqPhi, MAC);
+    colormap(jet); colorbar;
+    caxis([0 1]); % MAC always between 0 and 1
+
+    xlabel('Psi modes frequency [Hz]');
+    ylabel('Phi modes frequency [Hz]');
+    title('MAC Matrix');
+
+    axis xy; % to put low frequencies bottom-left
+
+    % Add grid lines
+    set(gca, 'XTick', freqPsi, 'YTick', freqPhi, ...
+             'XTickLabelRotation', 45, 'TickDir', 'out');
+
+    % Optionally overlay numeric MAC values
+    if showValues
+        hold on;
+        for i = 1:size(MAC,1)
+            for j = 1:size(MAC,2)
+                val = MAC(i,j);
+                if val > 0.01 % avoid clutter for ~zero values
+                    text(freqPsi(j), freqPhi(i), sprintf('%.2f', val), ...
+                         'HorizontalAlignment', 'center', ...
+                         'FontSize', 8, 'Color', 'w', 'FontWeight','bold');
+                end
             end
         end
+        hold off;
     end
 end
-
-sgtitle('Wavelet Denoising Comparisons');
