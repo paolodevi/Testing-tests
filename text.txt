@@ -1,30 +1,105 @@
-function Faces = build_faces_from_edges(Edges)
-    % Very simple loop closure (works for clean loops only)
-    used = false(size(Edges,1),1);
-    Faces = {};
-    for i = 1:size(Edges,1)
-        if used(i), continue; end
-        loop = Edges(i,:);
-        used(i) = true;
-        current = loop(end);
-        % Follow connected edges to close loop
-        while true
-            [nextEdge, idx] = find(Edges == current);
-            nextEdge = nextEdge(~used(nextEdge));
-            if isempty(nextEdge)
-                break;
-            end
-            used(nextEdge(1)) = true;
-            e = Edges(nextEdge(1),:);
-            current = e(e~=current);
-            loop(end+1) = current;
-            if loop(1) == loop(end)
-                break;
-            end
-        end
-        if loop(1) == loop(end)
-            Faces{end+1} = loop(1:end-1);
-        end
-    end
-    Faces = Faces'; % cell array of faces
+Absolutely ✅ — MATLAB makes it straightforward to save your animation as a GIF, and it works perfectly with the patch-based animation you already have.
+
+Let’s go step by step 👇
+
+
+---
+
+🎞️ Add GIF saving to your animation loop
+
+Below is a template you can wrap around your existing animation code (no matter if it’s a standalone or part of your big script):
+
+% === GIF SETTINGS ===
+gif_filename = 'mode_animation.gif';  % output filename
+delay_time = 0.02;                    % frame delay in seconds (~50 FPS)
+loop_count = inf;                     % repeat forever
+
+% === (OPTIONAL) remove existing file ===
+if isfile(gif_filename)
+    delete(gif_filename);
 end
+
+% === ANIMATION LOOP ===
+for i = 1:length(t)
+    % ... your existing animation update code ...
+    % e.g.
+    %   V = V0 + scale * dV * sin(omega * t(i));
+    %   set(hPatch, 'Vertices', V);
+
+    drawnow;
+
+    % --- Capture frame and write to GIF ---
+    frame = getframe(gcf);  % capture current figure
+    [imind, cm] = rgb2ind(frame2im(frame), 256);  % convert to indexed image
+
+    if i == 1
+        imwrite(imind, cm, gif_filename, 'gif', ...
+                'Loopcount', loop_count, 'DelayTime', delay_time);
+    else
+        imwrite(imind, cm, gif_filename, 'gif', ...
+                'WriteMode', 'append', 'DelayTime', delay_time);
+    end
+end
+
+disp(['✅ GIF saved as ', gif_filename]);
+
+
+---
+
+💡 Notes and Tips
+
+getframe(gcf) captures the current figure window exactly as displayed.
+
+Adjust delay_time to control playback speed in the GIF.
+
+Loopcount = inf makes the GIF loop indefinitely — set it to 1 for single playthrough.
+
+If your animation flickers or you see background issues, try adding:
+
+set(gcf, 'Renderer', 'zbuffer');
+
+before the loop (it’s often more stable for 3D patches).
+
+
+
+---
+
+🧠 Example integration
+
+Say your animation code looks like this:
+
+for i = 1:length(t)
+    V = V0 + scale * dV * sin(omega * t(i));
+    set(hPatch, 'Vertices', V);
+    drawnow;
+end
+
+Just change it to:
+
+for i = 1:length(t)
+    V = V0 + scale * dV * sin(omega * t(i));
+    set(hPatch, 'Vertices', V);
+    drawnow;
+    
+    % Capture and write GIF frame
+    frame = getframe(gcf);
+    [imind, cm] = rgb2ind(frame2im(frame), 256);
+    if i == 1
+        imwrite(imind, cm, 'mode_animation.gif', 'gif', ...
+                'Loopcount', inf, 'DelayTime', 0.02);
+    else
+        imwrite(imind, cm, 'mode_animation.gif', 'gif', ...
+                'WriteMode', 'append', 'DelayTime', 0.02);
+    end
+end
+
+
+---
+
+Would you like me to modify your existing animation function (the one with patch('Faces', Faces, 'Vertices', ...)) to automatically save the GIF too?
+That way you can call it like:
+
+animate_mode_patch(Faces, V0, V1, f, scale, nCycles, nFrames, 'savegif', true);
+
+and it would do everything in one go.
+
