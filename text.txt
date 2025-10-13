@@ -1,204 +1,63 @@
-function plot_mac3Dbar(MAC, freqPhi, freqPsi)
-% PLOT_MAC3DBAR  3D bar visualization of MAC matrix with frequencies on ticks.
-%
-%   plot_mac3Dbar(MAC, freqPhi, freqPsi)
-%
-% INPUT:
-%   MAC     : nPhi x nPsi MAC matrix (values 0..1)
-%   freqPhi : vector of frequencies (Hz) for Phi modes (length nPhi)
-%   freqPsi : vector of frequencies (Hz) for Psi modes (length nPsi)
-%
-% Example:
-%   plot_mac3Dbar(MAC, freqPhi, freqPsi);
+% === animate_mode_patch.m ===
+% Animate an eigenmode using patch (Faces + Vertices)
 
-    nPhi = size(MAC,1);
-    nPsi = size(MAC,2);
+clear; clc; close all;
 
-    figure;
-    % Bar plot on integer grid
-    h = bar3(MAC);
+%% === USER INPUTS ===
+f = 20;                % Natural frequency (Hz)
+scale = 5;             % Visualization scale factor
+nCycles = 3;           % Number of oscillation cycles
+nFramesPerCycle = 100; % Frames per cycle
 
-    colormap(parula);
-    colorbar;
-    caxis([0 1]);
+% === GEOMETRY ===
+% Faces:   [nFaces x nNodesPerFace]
+% Vertices: [nNodes x 3]
+% Replace with your actual data:
+Faces = [...];       % e.g., from your mesh connectivity
+V0 = [...];          % Undeformed coordinates [x y z]
+V1 = [...];          % Deformed coordinates [x y z] for one mode
 
-    % Color the bars by height
-    for k = 1:length(h)
-        zdata = get(h(k),'ZData');
-        set(h(k), 'CData', zdata, 'FaceColor','interp');
-    end
+%% === PREPARE ANIMATION ===
+omega = 2*pi*f;      % Angular frequency [rad/s]
+tCycle = 1/f;        % Period of oscillation
+t = linspace(0, nCycles*tCycle, nFramesPerCycle*nCycles);
 
-    xlabel('Psi modes');
-    ylabel('Phi modes');
-    zlabel('MAC value');
-    title('3D MAC Bar Plot');
+% Mode shape vector (deformation per node)
+dV = V1 - V0;
 
-    % --- Replace tick labels with frequencies (if given) ---
-    if nargin >= 2 && ~isempty(freqPhi)
-        yticks(1:nPhi);
-        yticklabels(arrayfun(@(f) sprintf('%.2f',f), freqPhi, 'UniformOutput', false));
-        ylabel('Phi modes frequency [Hz]');
-    end
-    if nargin >= 3 && ~isempty(freqPsi)
-        xticks(1:nPsi);
-        xticklabels(arrayfun(@(f) sprintf('%.2f',f), freqPsi, 'UniformOutput', false));
-        xtickangle(45);
-        xlabel('Psi modes frequency [Hz]');
-    end
+%% === INITIALIZE FIGURE ===
+figure('Color', 'w');
+ax = axes('Projection','perspective');
+hold on; grid on; axis equal;
+xlabel('X'); ylabel('Y'); zlabel('Z');
+title(sprintf('Eigenmode Animation (f = %.2f Hz)', f));
 
-    zlim([0 1]);
-    grid on;
-    view(-35,30); % nice perspective
-end
+% Create the initial patch object
+hPatch = patch('Faces', Faces, ...
+               'Vertices', V0, ...
+               'FaceColor', [0.3 0.6 1], ...
+               'EdgeColor', 'none', ...
+               'FaceLighting', 'gouraud', ...
+               'AmbientStrength', 0.3);
 
-function plot_mac3Dbar(MAC, freqPhi, freqPsi)
-% PLOT_MAC3DBAR  3D bar visualization of MAC matrix with frequencies on axes.
-%
-%   plot_mac3Dbar(MAC, freqPhi, freqPsi)
-%
-% INPUT:
-%   MAC     : nPhi x nPsi MAC matrix (values 0..1)
-%   freqPhi : vector of frequencies (Hz) for Phi modes (length nPhi)
-%   freqPsi : vector of frequencies (Hz) for Psi modes (length nPsi)
-%
-% Example:
-%   plot_mac3Dbar(MAC, freqPhi, freqPsi);
+% Add a light for realism
+camlight headlight;
+material shiny;
 
-    if nargin < 2 || isempty(freqPhi)
-        freqPhi = 1:size(MAC,1);
-    end
-    if nargin < 3 || isempty(freqPsi)
-        freqPsi = 1:size(MAC,2);
-    end
+% Set initial view
+view(3);
 
-    figure;
-    % bar3 plots each row along X, so we transpose MAC for alignment
-    h = bar3(freqPhi, MAC);
-
-    colormap(parula);
-    colorbar;
-    caxis([0 1]);
-
-    % Adjust colors of bars individually
-    for k = 1:length(h)
-        zdata = get(h(k),'ZData');
-        cdata = zdata;
-        set(h(k),'CData',cdata, 'FaceColor','interp');
-    end
-
-    xlabel('Psi modes frequency [Hz]');
-    ylabel('Phi modes frequency [Hz]');
-    zlabel('MAC value');
-    title('3D MAC Bar Plot');
-
-    % Use actual Psi frequencies as X tick labels
-    xticks(1:length(freqPsi));
-    xticklabels(arrayfun(@(f) sprintf('%.2f',f), freqPsi, 'UniformOutput', false));
-    xtickangle(45);
-
-    yticks(freqPhi);
-    yticklabels(arrayfun(@(f) sprintf('%.2f',f), freqPhi, 'UniformOutput', false));
-
-    zlim([0 1]);
-    grid on;
-    view(-35,30); % good perspective
-end
-
-function plot_mac3D(MAC, freqPhi, freqPsi)
-% PLOT_MAC3D  3D visualization of MAC matrix with frequencies as axes.
-%
-%   plot_mac3D(MAC, freqPhi, freqPsi)
-%
-% INPUT:
-%   MAC     : nPhi x nPsi MAC matrix (values 0..1)
-%   freqPhi : vector of frequencies (Hz) for Phi modes (length nPhi)
-%   freqPsi : vector of frequencies (Hz) for Psi modes (length nPsi)
-%
-% Example:
-%   plot_mac3D(MAC, freqPhi, freqPsi);
-
-    if nargin < 2 || isempty(freqPhi)
-        freqPhi = 1:size(MAC,1);
-    end
-    if nargin < 3 || isempty(freqPsi)
-        freqPsi = 1:size(MAC,2);
-    end
-
-    [X, Y] = meshgrid(freqPsi, freqPhi);
-
-    figure;
-    surf(X, Y, MAC, 'EdgeColor','none');
-    colormap(parula);
-    colorbar;
-    caxis([0 1]); % keep range between 0 and 1
-
-    xlabel('Psi modes frequency [Hz]');
-    ylabel('Phi modes frequency [Hz]');
-    zlabel('MAC value');
-    title('3D MAC Surface Plot');
-
-    % Make it prettier
-    view(45,30);    % good 3D angle
-    shading interp; % smooth surface
-    grid on;
-end
-
-function plot_mac(MAC, freqPhi, freqPsi, showValues)
-% PLOT_MAC  Visualize the MAC matrix as a heatmap with frequencies on axes.
-%
-%   plot_mac(MAC, freqPhi, freqPsi, showValues)
-%
-% INPUT:
-%   MAC        : nPhi x nPsi MAC matrix (values between 0 and 1)
-%   freqPhi    : (optional) vector of frequencies (Hz) for Phi modes (length = nPhi)
-%   freqPsi    : (optional) vector of frequencies (Hz) for Psi modes (length = nPsi)
-%   showValues : (optional) true/false, if true prints MAC values in cells (default = false)
-%
-% Example:
-%   plot_mac(MAC, freqPhi, freqPsi, true);
-
-    if nargin < 2 || isempty(freqPhi)
-        freqPhi = 1:size(MAC,1);
-    end
-    if nargin < 3 || isempty(freqPsi)
-        freqPsi = 1:size(MAC,2);
-    end
-    if nargin < 4
-        showValues = false;
-    end
-
-    % Make sure freq vectors are row/col
-    freqPhi = freqPhi(:);
-    freqPsi = freqPsi(:);
-
-    figure;
-    imagesc(freqPsi, freqPhi, MAC);
-    colormap(jet); colorbar;
-    caxis([0 1]); % MAC always between 0 and 1
-
-    xlabel('Psi modes frequency [Hz]');
-    ylabel('Phi modes frequency [Hz]');
-    title('MAC Matrix');
-
-    axis xy; % to put low frequencies bottom-left
-
-    % Add grid lines
-    set(gca, 'XTick', freqPsi, 'YTick', freqPhi, ...
-             'XTickLabelRotation', 45, 'TickDir', 'out');
-
-    % Optionally overlay numeric MAC values
-    if showValues
-        hold on;
-        for i = 1:size(MAC,1)
-            for j = 1:size(MAC,2)
-                val = MAC(i,j);
-                if val > 0.01 % avoid clutter for ~zero values
-                    text(freqPsi(j), freqPhi(i), sprintf('%.2f', val), ...
-                         'HorizontalAlignment', 'center', ...
-                         'FontSize', 8, 'Color', 'w', 'FontWeight','bold');
-                end
-            end
-        end
-        hold off;
-    end
+%% === ANIMATION LOOP ===
+for i = 1:length(t)
+    % Harmonic deformation at this time
+    phase = sin(omega * t(i));
+    V = V0 + scale * dV * phase;
+    
+    % Update patch vertices
+    set(hPatch, 'Vertices', V);
+    
+    % Update title
+    title(sprintf('Eigenmode Animation (t = %.3f s)', t(i)));
+    
+    drawnow;
 end
