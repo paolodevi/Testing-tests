@@ -1,6 +1,4 @@
-% === animate_mode_patch.m ===
-% Animate an eigenmode using patch (Faces + Vertices)
-
+% === animate_mode_patch_debug.m ===
 clear; clc; close all;
 
 %% === USER INPUTS ===
@@ -9,55 +7,66 @@ scale = 5;             % Visualization scale factor
 nCycles = 3;           % Number of oscillation cycles
 nFramesPerCycle = 100; % Frames per cycle
 
-% === GEOMETRY ===
-% Faces:   [nFaces x nNodesPerFace]
-% Vertices: [nNodes x 3]
-% Replace with your actual data:
-Faces = [...];       % e.g., from your mesh connectivity
-V0 = [...];          % Undeformed coordinates [x y z]
-V1 = [...];          % Deformed coordinates [x y z] for one mode
+% === GEOMETRY (replace with your data) ===
+% Example minimal test shape (a small square)
+% Uncomment this to test if your data fails
+% Faces = [1 2 3 4];
+% V0 = [0 0 0; 1 0 0; 1 1 0; 0 1 0];
+% V1 = V0 + [0 0 0; 0 0 0.1; 0 0 0.1; 0 0 0];
+
+% Your data here:
+Faces = ...;   % e.g., [nFaces x 3 or 4]
+V0 = ...;      % [nNodes x 3]
+V1 = ...;      % [nNodes x 3]
+
+%% === VALIDATION ===
+if isempty(Faces) || isempty(V0)
+    error('Faces or Vertices are empty. Check your input data.');
+end
+if size(V0,2) ~= 3
+    error('Vertices must be an N×3 array.');
+end
+if max(Faces(:)) > size(V0,1)
+    error('Faces reference nonexistent vertex indices.');
+end
 
 %% === PREPARE ANIMATION ===
-omega = 2*pi*f;      % Angular frequency [rad/s]
-tCycle = 1/f;        % Period of oscillation
+omega = 2*pi*f;
+tCycle = 1/f;
 t = linspace(0, nCycles*tCycle, nFramesPerCycle*nCycles);
-
-% Mode shape vector (deformation per node)
 dV = V1 - V0;
 
 %% === INITIALIZE FIGURE ===
-figure('Color', 'w');
-ax = axes('Projection','perspective');
-hold on; grid on; axis equal;
+fig = figure('Color', 'w');
+ax = axes('Parent', fig, 'Projection', 'perspective');
+hold(ax, 'on'); grid(ax, 'on'); axis(ax, 'equal');
 xlabel('X'); ylabel('Y'); zlabel('Z');
-title(sprintf('Eigenmode Animation (f = %.2f Hz)', f));
+title(sprintf('Eigenmode (%.2f Hz)', f));
 
-% Create the initial patch object
+% Create patch
 hPatch = patch('Faces', Faces, ...
                'Vertices', V0, ...
                'FaceColor', [0.3 0.6 1], ...
-               'EdgeColor', 'none', ...
+               'EdgeColor', 'k', ...          % add visible edges
                'FaceLighting', 'gouraud', ...
-               'AmbientStrength', 0.3);
+               'AmbientStrength', 0.5, ...
+               'Parent', ax);
 
-% Add a light for realism
-camlight headlight;
-material shiny;
-
-% Set initial view
+% Add light and view
+camlight('headlight');
+material('dull');
 view(3);
+
+% Set axis limits explicitly
+allV = [V0; V1];
+axis(ax, [min(allV(:,1)) max(allV(:,1)) ...
+          min(allV(:,2)) max(allV(:,2)) ...
+          min(allV(:,3)) max(allV(:,3))]);
 
 %% === ANIMATION LOOP ===
 for i = 1:length(t)
-    % Harmonic deformation at this time
-    phase = sin(omega * t(i));
+    phase = sin(omega*t(i));
     V = V0 + scale * dV * phase;
-    
-    % Update patch vertices
     set(hPatch, 'Vertices', V);
-    
-    % Update title
-    title(sprintf('Eigenmode Animation (t = %.3f s)', t(i)));
-    
     drawnow;
 end
