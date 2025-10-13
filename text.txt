@@ -1,52 +1,77 @@
-function animate_mode_patch(Faces, V0, V1, f, scale, nCycles, nFramesPerCycle)
-% animate_mode_patch  Animate an eigenmode using patch (independent figure)
+function animate_mode_patch(Faces, V0, V1, f, scale, nCycles, nFramesPerCycle, symmetryType, tol)
+% animate_mode_patch  Animate an eigenmode using patch (with mirroring)
 %
 % Usage:
-%   animate_mode_patch(Faces, V0, V1, f, scale, nCycles, nFramesPerCycle)
+%   animate_mode_patch(Faces, V0, V1, f, scale, nCycles, nFramesPerCycle, symmetryType, tol)
 %
 % Inputs:
 %   Faces  - connectivity matrix [nFaces x nNodesPerFace]
 %   V0     - undeformed vertices [nNodes x 3]
-%   V1     - deformed vertices [nNodes x 3]
+%   V1     - deformed vertices [nNodes x 3] (same size as V0)
 %   f      - natural frequency (Hz)
 %   scale  - deformation scale factor
-%   nCycles - number of oscillation cycles to animate
+%   nCycles - number of oscillation cycles
 %   nFramesPerCycle - number of frames per cycle
+%   symmetryType - 'symmetric', 'antisymmetric', or 'none'
+%   tol    - tolerance for plane proximity (e.g. 1e-6 or 1e-3)
 
-    %% === VALIDATION ===
-    if nargin < 7, nFramesPerCycle = 100; end
-    if nargin < 6, nCycles = 3; end
-    if nargin < 5, scale = 5; end
+    %% === DEFAULTS ===
+    if nargin < 10, tol = 1e-6; end
+    if nargin < 9, symmetryType = 'none'; end
+    if nargin < 8, nFramesPerCycle = 100; end
+    if nargin < 7, nCycles = 3; end
+    if nargin < 6, scale = 5; end
 
-    if isempty(Faces) || isempty(V0) || isempty(V1)
-        error('Faces or Vertices are empty.');
-    end
-
-    %% === PREPARE ANIMATION ===
     omega = 2*pi*f;
     tCycle = 1/f;
     t = linspace(0, nCycles*tCycle, nFramesPerCycle*nCycles);
+
     dV = V1 - V0;
 
-    %% === CREATE SEPARATE FIGURE & AXES ===
-    animFig = figure('Name', sprintf('Mode %.2f Hz', f), ...
+    %% === IDENTIFY MIRRORABLE NODES ===
+    y = V0(:,2);
+    isPlane = abs(y) <= tol;
+    isMirror = ~isPlane;
+
+    % Mirror coordinates and deformation
+    V0_mirror = V0(isMirror,:);
+    V0_mirror(:,2) = -V0_mirror(:,2);
+
+    dV_mirror = dV(isMirror,:);
+    dV_mirror(:,2) = -dV_mirror(:,2); % reflect deformation direction
+
+    % Apply antisymmetric sign flip if needed
+    if strcmpi(symmetryType, 'antisymmetric')
+        dV_mirror = -dV_mirror;
+    end
+
+    % Combine both sides
+    V0_combined = [V0; V0_mirror];
+    dV_combined = [dV; dV_mirror];
+
+    % Update Faces for the mirrored half
+    Faces_mirror = Faces + size(V0,1);
+    Faces_combined = [Faces; Faces_mirror];
+
+    %% === CREATE FIGURE ===
+    animFig = figure('Name', sprintf('Mode %.2f Hz (%s)', f, symmetryType), ...
                      'Color', 'w', ...
                      'NumberTitle', 'off');
     animAx = axes('Parent', animFig, 'Projection', 'perspective');
     hold(animAx, 'on'); grid(animAx, 'on'); axis(animAx, 'equal');
     xlabel(animAx, 'X'); ylabel(animAx, 'Y'); zlabel(animAx, 'Z');
-    title(animAx, sprintf('Mode Shape Animation (%.2f Hz)', f));
+    title(animAx, sprintf('Mode Shape Animation (%.2f Hz) - %s', f, symmetryType));
 
     % Define axis limits before animation
-    allV = [V0; V1];
+    allV = [V0_combined; V0_combined + scale*dV_combined];
     axis(animAx, [min(allV(:,1)) max(allV(:,1)) ...
                   min(allV(:,2)) max(allV(:,2)) ...
                   min(allV(:,3)) max(allV(:,3))]);
 
     %% === INITIAL PATCH ===
     hPatch = patch(animAx, ...
-        'Faces', Faces, ...
-        'Vertices', V0, ...
+        'Faces', Faces_combined, ...
+        'Vertices', V0_combined, ...
         'FaceColor', [0.3 0.6 1], ...
         'EdgeColor', 'none', ...
         'FaceLighting', 'gouraud', ...
@@ -59,12 +84,11 @@ function animate_mode_patch(Faces, V0, V1, f, scale, nCycles, nFramesPerCycle)
     %% === ANIMATION LOOP ===
     for i = 1:length(t)
         if ~ishandle(animFig)
-            % User closed the figure → safely exit
-            return;
+            return; % stop cleanly if figure closed
         end
         phase = sin(omega * t(i));
-        V = V0 + scale * dV * phase;
+        V = V0_combined + scale * dV_combined * phase;
         set(hPatch, 'Vertices', V);
-        drawnow limitrate;  % More efficient redraw
+        drawnow limitrate;
     end
 end
