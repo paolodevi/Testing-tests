@@ -1,116 +1,30 @@
-function animate_mode_patch_sym(Faces, V0, V1, f, scale, nCycles, nFramesPerCycle, symmetryType, tol)
-% animate_mode_patch_sym  Animate eigenmode using patch with correct mirroring
-%
-% Usage:
-%  animate_mode_patch_sym(Faces, V0, V1, f, scale, nCycles, nFramesPerCycle, symmetryType, tol)
-%
-% Inputs:
-%  Faces  - connectivity matrix [nElements x nodesPerElement] (can be n×2)
-%  V0     - undeformed vertices [nNodes x 3]
-%  V1     - deformed vertices [nNodes x 3]
-%  f      - natural frequency (Hz)
-%  scale  - deformation scale factor
-%  nCycles - number of cycles to animate
-%  nFramesPerCycle - frames per cycle
-%  symmetryType - 'symmetric', 'antisymmetric', or 'none'
-%  tol    - tolerance for being on symmetry plane (y = 0)
-%
-% Notes:
-%  - Symmetry plane is xz-plane (y = 0).
-%  - Only nodes with abs(y) > tol are mirrored; nodes within tol remain shared.
-
-    %% ---- Defaults & validation ----
-    if nargin < 10, tol = 1e-6; end
-    if nargin < 9, symmetryType = 'none'; end
-    if nargin < 8, nFramesPerCycle = 100; end
-    if nargin < 7, nCycles = 3; end
-    if nargin < 6, scale = 5; end
-
-    assert(size(V0,2) == 3, 'V0 must be N×3');
-    assert(isequal(size(V0), size(V1)), 'V0 and V1 must be same size');
-
-    omega = 2*pi*f;
-    tCycle = 1/f;
-    t = linspace(0, nCycles*tCycle, nFramesPerCycle*nCycles);
-
-    dV = V1 - V0;
-    nNodes = size(V0,1);
-
-    %% ---- Identify nodes to mirror ----
-    y = V0(:,2);
-    isPlane = abs(y) <= tol;        % nodes close to plane (shared)
-    isMirror = ~isPlane;           % nodes to be mirrored (appended)
-
-    % Build mapping from original indices to indices used in mirrored faces:
-    % - nodes on plane map to themselves
-    % - mirrored nodes map to appended indices after original vertices
-    mapIdx = (1:nNodes)';          % default: map to itself
-    idxMirrorOrig = find(isMirror);        % original indices to mirror
-    nMirror = numel(idxMirrorOrig);
-    if nMirror > 0
-        % appended block index start
-        appendedStart = nNodes + 1;
-        appendedIndices = appendedStart + (0:nMirror-1)';
-        % assign map for mirrored nodes
-        mapIdx(idxMirrorOrig) = appendedIndices;
+function Faces = build_faces_from_edges(Edges)
+    % Very simple loop closure (works for clean loops only)
+    used = false(size(Edges,1),1);
+    Faces = {};
+    for i = 1:size(Edges,1)
+        if used(i), continue; end
+        loop = Edges(i,:);
+        used(i) = true;
+        current = loop(end);
+        % Follow connected edges to close loop
+        while true
+            [nextEdge, idx] = find(Edges == current);
+            nextEdge = nextEdge(~used(nextEdge));
+            if isempty(nextEdge)
+                break;
+            end
+            used(nextEdge(1)) = true;
+            e = Edges(nextEdge(1),:);
+            current = e(e~=current);
+            loop(end+1) = current;
+            if loop(1) == loop(end)
+                break;
+            end
+        end
+        if loop(1) == loop(end)
+            Faces{end+1} = loop(1:end-1);
+        end
     end
-
-    %% ---- Construct combined vertex & deformation arrays ----
-    % V_combined = [V0; V0(idxMirrorOrig,:) mirrored across y]
-    V0_mirrored = V0(idxMirrorOrig, :);
-    V0_mirrored(:,2) = -V0_mirrored(:,2);   % reflect across y=0
-
-    dV_mirrored = dV(idxMirrorOrig, :);
-    dV_mirrored(:,2) = -dV_mirrored(:,2);   % reflect deformation direction
-
-    % If antisymmetric, mirrored deformation flips sign
-    if strcmpi(symmetryType, 'antisymmetric')
-        dV_mirrored = -dV_mirrored;
-    end
-
-    V0_combined = [V0; V0_mirrored];
-    dV_combined = [dV; dV_mirrored];
-
-    %% ---- Create mirrored Faces using mapIdx ----
-    % Faces_mirror = mapIdx(Faces)
-    Faces_mirror = mapIdx(Faces);  % apply mapping elementwise (MATLAB implicit indexing)
-
-    % Combine original and mirrored connectivity
-    Faces_combined = [Faces; Faces_mirror];
-
-    %% ---- Initialize figure and patch ----
-    animFig = figure('Name', sprintf('Mode %.2f Hz (%s)', f, symmetryType), ...
-                     'Color', 'w', 'NumberTitle', 'off');
-    animAx = axes('Parent', animFig, 'Projection', 'perspective');
-    hold(animAx, 'on'); grid(animAx, 'on'); axis(animAx, 'equal');
-    xlabel(animAx, 'X'); ylabel(animAx, 'Y'); zlabel(animAx, 'Z');
-    title(animAx, sprintf('Mode Shape Animation (%.2f Hz) - %s', f, symmetryType));
-
-    % Axis limits based on both original and possible maximum deformation
-    allV = [V0_combined; V0_combined + scale * dV_combined];
-    axis(animAx, [min(allV(:,1)) max(allV(:,1)) ...
-                  min(allV(:,2)) max(allV(:,2)) ...
-                  min(allV(:,3)) max(allV(:,3))]);
-
-    % Create patch (works for edges (n×2) or polygons)
-    hPatch = patch(animAx, ...
-        'Faces', Faces_combined, ...
-        'Vertices', V0_combined, ...
-        'FaceColor', [0.7 0.85 1], ...
-        'EdgeColor', 'k', ...
-        'FaceLighting', 'gouraud', ...
-        'AmbientStrength', 0.3);
-
-    camlight(animAx, 'headlight');
-    material(animAx, 'shiny');
-    view(animAx, 3);
-
-    %% ---- Animation loop ----
-    for i = 1:length(t)
-        if ~ishandle(animFig), return; end
-        phase = sin(omega * t(i));
-        Vnow = V0_combined + scale * dV_combined * phase;
-        set(hPatch, 'Vertices', Vnow);
-        drawnow limitrate;
-    end
+    Faces = Faces'; % cell array of faces
 end
