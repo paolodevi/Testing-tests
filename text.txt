@@ -1,44 +1,52 @@
-function playTwoAnimations(frames1, frames2, fps)
-%PLAYTWOANIMATIONS Display two sets of frames side by side using subplots.
+function playTwoAnimationsLoop(frames1, frames2, fps)
+%PLAYTWOANIMATIONSLOOP  Continuously display two animations side by side.
 %
-%   playTwoAnimations(frames1, frames2, fps)
+%   playTwoAnimationsLoop(frames1, frames2, fps)
 %
 %   frames1, frames2 : struct arrays from getframe()
 %   fps (optional)   : playback speed (default = 30)
+%
+%   The animation loops until the figure is closed or Esc is pressed.
 
     if nargin < 3, fps = 30; end
     nFrames = min(length(frames1), length(frames2));
 
-    % Make figure and layout
-    figure('Color','w');
-    t = tiledlayout(1,2, 'TileSpacing','compact', 'Padding','compact');
+    % --- Setup figure and layout ---
+    fig = figure('Color','w','Name','Side-by-Side Animation',...
+                 'NumberTitle','off','UserData',true);
 
-    % Show first frames and create image handles
+    % Allow Esc key to stop playback cleanly
+    set(fig, 'KeyPressFcn', @(src,evt) ...
+        set(src,'UserData',~strcmp(evt.Key,'escape')));
+
+    t = tiledlayout(fig,1,2,'TileSpacing','compact','Padding','compact');
+
     nexttile(1);
-    h1 = imshow(frames1(1).cdata, 'Border', 'tight');
+    h1 = imshow(frames1(1).cdata, 'Border','tight');
     title('Animation 1');
 
     nexttile(2);
-    h2 = imshow(frames2(1).cdata, 'Border', 'tight');
+    h2 = imshow(frames2(1).cdata, 'Border','tight');
     title('Animation 2');
 
-    % Fix aspect ratio
     axis image off
 
-    % Timing setup
-    dt = 1/fps;
-    tic;
+    dt = 1 / fps;
 
-    % Playback loop
-    for k = 1:nFrames
-        % Update the two images
-        set(h1, 'CData', frames1(k).cdata);
-        set(h2, 'CData', frames2(k).cdata);
+    % --- Continuous playback loop ---
+    while ishandle(fig) && logical(get(fig, 'UserData'))
+        for k = 1:nFrames
+            % Stop cleanly if closed or escape pressed
+            if ~ishandle(fig) || ~logical(get(fig, 'UserData'))
+                return;
+            end
 
-        drawnow limitrate;
+            % Update both frames
+            set(h1, 'CData', frames1(k).cdata);
+            set(h2, 'CData', frames2(k).cdata);
+            drawnow limitrate nocallbacks;
 
-        % Keep frame timing steady
-        elapsed = toc;
-        pause(max(0, k*dt - elapsed));
+            pause(dt); % smooth, consistent timing
+        end
     end
 end
