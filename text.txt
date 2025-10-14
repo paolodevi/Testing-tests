@@ -1,32 +1,23 @@
-% Define GIF file names
-gif1 = 'animation1.gif';
-gif2 = 'animation2.gif';
+nFrames = min(length(frames1), length(frames2));
 
-% Read both GIFs into 4-D arrays
-[A1, map1] = imread(gif1, 'Frames', 'all');
-[A2, map2] = imread(gif2, 'Frames', 'all');
-
-% Convert indexed to RGB if necessary
-if ~isempty(map1)
-    A1 = ind2rgb(A1, map1);
-end
-if ~isempty(map2)
-    A2 = ind2rgb(A2, map2);
-end
-
-% Ensure they have same number of frames (trim if needed)
-numFrames = min(size(A1,4), size(A2,4));
-
-% Display side by side
 figure;
-for k = 1:numFrames
-    img1 = A1(:,:,:,k);
-    img2 = A2(:,:,:,k);
-    
+for k = 1:nFrames
+    % Extract frame images
+    img1 = frames1(k).cdata;
+    img2 = frames2(k).cdata;
+
+    % If needed, resize to same height
+    if size(img1,1) ~= size(img2,1)
+        targetH = min(size(img1,1), size(img2,1));
+        img1 = imresize(img1, [targetH NaN]);
+        img2 = imresize(img2, [targetH NaN]);
+    end
+
     % Concatenate horizontally
     combined = [img1, img2];
-    
+
+    % Display efficiently
     imshow(combined);
-    title(sprintf('Frame %d / %d', k, numFrames));
+    title(sprintf('Frame %d / %d', k, nFrames));
     drawnow;
 end
