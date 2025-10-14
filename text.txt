@@ -1,44 +1,44 @@
-function saveCombinedAnimation(frames1, frames2, fps, outFile)
-%SAVE COMBINED ANIMATION Combine two frame structs side by side into a video.
+function playTwoAnimations(frames1, frames2, fps)
+%PLAYTWOANIMATIONS Display two sets of frames side by side using subplots.
 %
-% Example:
-%   saveCombinedAnimation(framesA, framesB, 30, 'combined.mp4')
+%   playTwoAnimations(frames1, frames2, fps)
+%
+%   frames1, frames2 : struct arrays from getframe()
+%   fps (optional)   : playback speed (default = 30)
 
     if nargin < 3, fps = 30; end
-    if nargin < 4, outFile = 'combined.mp4'; end
-
-    % Determine number of frames
     nFrames = min(length(frames1), length(frames2));
 
-    % Ensure same height (resize first frame, then all)
-    sz1 = size(frames1(1).cdata);
-    sz2 = size(frames2(1).cdata);
-    targetH = min(sz1(1), sz2(1));
-    targetW1 = round(sz1(2) * targetH / sz1(1));
-    targetW2 = round(sz2(2) * targetH / sz2(1));
+    % Make figure and layout
+    figure('Color','w');
+    t = tiledlayout(1,2, 'TileSpacing','compact', 'Padding','compact');
 
-    % Initialize video writer (hardware accelerated)
-    v = VideoWriter(outFile, 'MPEG-4');
-    v.FrameRate = fps;
-    open(v);
+    % Show first frames and create image handles
+    nexttile(1);
+    h1 = imshow(frames1(1).cdata, 'Border', 'tight');
+    title('Animation 1');
 
-    fprintf('Writing combined video: %s\n', outFile);
+    nexttile(2);
+    h2 = imshow(frames2(1).cdata, 'Border', 'tight');
+    title('Animation 2');
 
+    % Fix aspect ratio
+    axis image off
+
+    % Timing setup
+    dt = 1/fps;
+    tic;
+
+    % Playback loop
     for k = 1:nFrames
-        img1 = imresize(frames1(k).cdata, [targetH, targetW1]);
-        img2 = imresize(frames2(k).cdata, [targetH, targetW2]);
+        % Update the two images
+        set(h1, 'CData', frames1(k).cdata);
+        set(h2, 'CData', frames2(k).cdata);
 
-        if ~isa(img1, 'uint8')
-            img1 = im2uint8(img1);
-        end
-        if ~isa(img2, 'uint8')
-            img2 = im2uint8(img2);
-        end
+        drawnow limitrate;
 
-        combined = [img1, img2];
-        writeVideo(v, combined);
+        % Keep frame timing steady
+        elapsed = toc;
+        pause(max(0, k*dt - elapsed));
     end
-
-    close(v);
-    fprintf('✅ Done! Saved to %s\n', outFile);
 end
