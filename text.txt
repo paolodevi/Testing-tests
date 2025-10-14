@@ -1,37 +1,61 @@
-% Parameters
-N = 100;                 % number of frames
-filename = 'animation.gif';
+% Define file names
+gif1 = 'first.gif';
+gif2 = 'second.gif';
+outputGif = 'combined_left_halves.gif';
 
-% Prepare figure (invisible)
-fig = figure('Visible', 'off');
+% Read both GIFs
+[img1, map1] = imread(gif1, 'Frames', 'all');
+[img2, map2] = imread(gif2, 'Frames', 'all');
 
-% Preallocate frame storage
-frames(N) = struct('cdata', [], 'colormap', []);
-
-for i = 1:N
-    % --- Compute geometry ---
-    V = compute_vertices(i);   % your function to update vertices
-    F = your_faces;            % constant or dynamic faces
-    
-    % --- Plot frame ---
-    patch('Faces', F, 'Vertices', V, 'FaceColor', 'interp', 'EdgeColor', 'none');
-    axis equal off
-    view(3)
-    drawnow
-    
-    % --- Capture frame ---
-    frames(i) = getframe(fig);
-    clf(fig) % clear for next frame
+% Convert indexed to RGB if needed
+if ~isempty(map1)
+    img1 = ind2rgb(img1, map1);
+end
+if ~isempty(map2)
+    img2 = ind2rgb(img2, map2);
 end
 
-close(fig) % done with figure
+% Get frame counts
+numFrames1 = size(img1, 4);
+numFrames2 = size(img2, 4);
+numFrames = min(numFrames1, numFrames2); % match lengths
 
-% --- Convert to indexed images and write GIF ---
-for i = 1:N
-    [A, map] = rgb2ind(frame2im(frames(i)), 256);
-    if i == 1
-        imwrite(A, map, filename, 'gif', 'LoopCount', Inf, 'DelayTime', 0.05);
+% Preallocate
+[height1, width1, ~, ~] = size(img1);
+[height2, width2, ~, ~] = size(img2);
+
+% Crop to left half
+half1 = floor(width1 / 2);
+half2 = floor(width2 / 2);
+
+% Combine and write frames
+for k = 1:numFrames
+    left1 = img1(:, 1:half1, :, k);
+    left2 = img2(:, 1:half2, :, k);
+
+    % Ensure same height (resize if needed)
+    if size(left1, 1) ~= size(left2, 1)
+        minH = min(size(left1,1), size(left2,1));
+        left1 = imresize(left1, [minH, size(left1,2)]);
+        left2 = imresize(left2, [minH, size(left2,2)]);
+    end
+
+    % Combine side-by-side
+    combined = [left1, left2];
+
+    % Convert to uint8 if needed
+    if ~isa(combined, 'uint8')
+        combined = im2uint8(combined);
+    end
+
+    % Write to output GIF
+    [A, map] = rgb2ind(combined, 256);
+    if k == 1
+        imwrite(A, map, outputGif, 'gif', 'LoopCount', Inf, 'DelayTime', 0.05);
     else
-        imwrite(A, map, filename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.05);
+        imwrite(A, map, outputGif, 'gif', 'WriteMode', 'append', 'DelayTime', 0.05);
     end
 end
+
+% Display the resulting GIF
+imshow(imread(outputGif, 'Frames', 1));
