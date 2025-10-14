@@ -1,13 +1,37 @@
-scr = get(0, 'ScreenSize');
-figWidth  = (2/3) * scr(3);
-figHeight = (2/3) * scr(4);
+% Parameters
+N = 100;                 % number of frames
+filename = 'animation.gif';
 
-% Center the figure on screen
-figLeft = (scr(3) - figWidth) / 2;
-figBottom = (scr(4) - figHeight) / 2;
+% Prepare figure (invisible)
+fig = figure('Visible', 'off');
 
-% Create the figure
-figure('Position', [figLeft, figBottom, figWidth, figHeight], ...
-       'Color', 'w', ...
-       'Name', 'Two-thirds Screen Figure', ...
-       'NumberTitle', 'off');
+% Preallocate frame storage
+frames(N) = struct('cdata', [], 'colormap', []);
+
+for i = 1:N
+    % --- Compute geometry ---
+    V = compute_vertices(i);   % your function to update vertices
+    F = your_faces;            % constant or dynamic faces
+    
+    % --- Plot frame ---
+    patch('Faces', F, 'Vertices', V, 'FaceColor', 'interp', 'EdgeColor', 'none');
+    axis equal off
+    view(3)
+    drawnow
+    
+    % --- Capture frame ---
+    frames(i) = getframe(fig);
+    clf(fig) % clear for next frame
+end
+
+close(fig) % done with figure
+
+% --- Convert to indexed images and write GIF ---
+for i = 1:N
+    [A, map] = rgb2ind(frame2im(frames(i)), 256);
+    if i == 1
+        imwrite(A, map, filename, 'gif', 'LoopCount', Inf, 'DelayTime', 0.05);
+    else
+        imwrite(A, map, filename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.05);
+    end
+end
