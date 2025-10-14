@@ -1,24 +1,21 @@
-Got it ✅ — you want to add two buttons (a red ❌ and a green ✅) to your MATLAB animation window, and make them return a 0 or 1 depending on which one is pressed.
-
-Here’s a clean way to do it using UI controls (uicontrol) in MATLAB:
-
-
----
-
-✅ Example Code
-
-function button_demo
+function userResponse = button_demo
     % Create figure
     fig = figure('Name','Animation Control',...
         'NumberTitle','off',...
         'Position',[400 300 600 400]);
 
-    % Add your animation axes
+    % Add animation axes
     ax = axes('Parent',fig,'Position',[0.1 0.3 0.8 0.65]);
     plot(ax, sin(0:0.1:2*pi)); % Example animation plot
     
-    % Create a variable to store the user response
+    % Initialize output
     userResponse = NaN;
+
+    % Callback function to set response and close figure
+    function buttonCallback(response)
+        userResponse = response;        % Store response
+        delete(fig);                    % Close figure
+    end
 
     % Create green "✓" button
     uicontrol('Style','pushbutton',...
@@ -27,7 +24,7 @@ function button_demo
         'FontSize',20,...
         'Units','normalized',...
         'Position',[0.3 0.05 0.15 0.15],...
-        'Callback',@(src,evt)setappdata(fig,'userResponse',1));
+        'Callback',@(src,evt)buttonCallback(1));
 
     % Create red "✖" button
     uicontrol('Style','pushbutton',...
@@ -36,56 +33,17 @@ function button_demo
         'FontSize',20,...
         'Units','normalized',...
         'Position',[0.55 0.05 0.15 0.15],...
-        'Callback',@(src,evt)setappdata(fig,'userResponse',0));
+        'Callback',@(src,evt)buttonCallback(0));
 
-    % Wait for user input
-    disp('Waiting for button press...');
-    waitfor(fig,'UserData'); % alternative if you want to use UserData
-
-    % Get the stored value
-    userResponse = getappdata(fig,'userResponse');
-
-    % Show result
-    if isempty(userResponse)
+    % Wait for figure to close
+    uiwait(fig);  % Wait until figure is deleted
+    
+    % Display result
+    if isnan(userResponse)
         disp('No button pressed.');
     elseif userResponse == 1
         disp('Green button pressed → returning 1');
     else
         disp('Red button pressed → returning 0');
     end
-
-    close(fig);
 end
-
-
----
-
-💡 How it works
-
-Two buttons (uicontrol) are added to the figure.
-
-Each button’s callback stores a value (1 or 0) using setappdata.
-
-The main script waits for user interaction using waitfor.
-
-When a button is pressed, the stored value is retrieved.
-
-
-
----
-
-🧩 If you want this inside your animation loop
-
-You can place the button code before your animation loop, and during the loop, you can check:
-
-resp = getappdata(fig,'userResponse');
-if ~isempty(resp)
-    % Stop animation or take action
-    break;
-end
-
-
----
-
-Would you like me to show you how to integrate these buttons directly into an existing animation loop (so pressing them stops or modifies the animation in real time)?
-
