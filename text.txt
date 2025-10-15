@@ -1,146 +1,75 @@
 k = 2;
 
-for i = 1:size(groups(k).candidates, 1)
-    for j = 1:size(groups(k).candidates, 2)
+% ---------- 1) Build list of candidate (i,j) pairs to review ----------
+[idx_i, idx_j] = find(groups(k).candidates == 1);
+nCandidates = numel(idx_i);
 
-        if groups(k).candidates(i, j)
+if nCandidates == 0
+    disp('No candidates to review.');
+else
+    % Prepare containers
+    responses = nan(nCandidates,1); % 1 = accept, 0 = reject, NaN = no decision/closed
 
-            % --- Reference conditions ---
-            frames1 = [];
-            for ii = 1:size(files_ref, 1)
-                ref_str = strrep(num2str(round(groups(k).fr(i), 2)), '.', '_');
-                if contains(files_ref(ii).name, ref_str)
-                    load(fullfile(files_ref(ii).folder, files_ref(ii).name));
-                    frames1 = frames;
-                    break;
-                end
-            end
+    % ---------- 2) Iterate the candidate list and show animations ----------
+    for m = 1:nCandidates
+        i = idx_i(m);
+        j = idx_j(m);
 
-            % --- Target conditions ---
-            frames2 = [];
-            for ii = 1:size(files_tgt, 1)
-                tgt_str = strrep(num2str(round(groups(k).ft(j), 2)), '.', '_');
-                if contains(files_tgt(ii).name, tgt_str)
-                    load(fullfile(files_tgt(ii).folder, files_tgt(ii).name));
-                    frames2 = frames;
-                    break;
-                end
-            end
-
-            if isempty(frames1) || isempty(frames2)
-                warning('Missing frames for candidate (%d,%d). Skipping...', i, j);
-                continue;
-            end
-
-            % --- Play both animations and wait for response ---
-            response = playTwoAnimations(frames1, frames2, 45);
-
-            % --- Update candidate matrix based on button pressed ---
-            if response == 1
-                % ✅ accepted
-                groups(k).candidates(i, :) = 0;  % zero entire row
-                groups(k).candidates(i, j) = 1;  % keep accepted one
-                fprintf('Accepted candidate (%d, %d). Row %d reset.\n', i, j, i);
-                break; % stop evaluating other j in this row
-            elseif response == 0
-                % ❌ rejected
-                groups(k).candidates(i, j) = 0;
-                fprintf('Rejected candidate (%d, %d).\n', i, j);
-            else
-                fprintf('Closed without decision (%d, %d).\n', i, j);
+        % find frames1
+        frames1 = [];
+        for ii = 1:size(files_ref,1)
+            ref_str = strrep(num2str(round(groups(k).fr(i),2)), '.', '_');
+            if contains(files_ref(ii).name, ref_str)
+                load(fullfile(files_ref(ii).folder, files_ref(ii).name)); %#ok<LOAD>
+                frames1 = frames;
+                break;
             end
         end
-    end
-end
 
-
-%% ================================================================
-% Function: playTwoAnimations
-% Returns 1 = accepted (green ✓), 0 = rejected (red X)
-% ================================================================
-function response = playTwoAnimations(frames1, frames2, fps)
-
-    if nargin < 3, fps = 30; end
-
-    nFrames = min(length(frames1), length(frames2));
-    scr = get(0, 'ScreenSize');
-
-    figWidth  = 0.8 * scr(3);
-    figHeight = 0.8 * scr(4);
-    figLeft   = (scr(3) - figWidth) / 2;
-    figBottom = (scr(4) - figHeight) / 2;
-
-    % Create figure window
-    fig = figure('Position', [figLeft, figBottom, figWidth, figHeight], ...
-                 'Color', 'w', 'NumberTitle', 'off', ...
-                 'UserData', true);
-
-    set(fig, 'KeyPressFcn', @(src, evt) ...
-        set(src, 'UserData', ~strcmp(evt.Key, 'escape')));
-
-    t = tiledlayout(fig, 2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
-
-    % --- Display both animations ---
-    nexttile(t, 1);
-    h1 = imshow(frames1(1).cdata, 'Border', 'tight');
-    title('Reference Configuration');
-    axis image off;
-
-    nexttile(t, 2);
-    h2 = imshow(frames2(1).cdata, 'Border', 'tight');
-    title('Target Configuration');
-    axis image off;
-
-    dt = 1 / fps;
-    k = 1;
-    response = NaN;
-
-    % --- Button callbacks ---
-    uicontrol('Style', 'pushbutton', 'String', '✓', ...
-        'ForegroundColor', 'green', 'FontSize', 30, ...
-        'Units', 'normalized', 'Position', [0.82 0.60 0.15 0.15], ...
-        'Callback', @(~,~) setappdata(fig, 'response', 1));
-
-    uicontrol('Style', 'pushbutton', 'String', 'X', ...
-        'ForegroundColor', 'red', 'FontSize', 30, ...
-        'Units', 'normalized', 'Position', [0.82 0.30 0.15 0.15], ...
-        'Callback', @(~,~) setappdata(fig, 'response', 0));
-
-    % --- Timer for animation ---
-    timerObj = timer('ExecutionMode', 'fixedRate', 'Period', dt, ...
-                     'TimerFcn', @(~,~) updateFrames());
-
-    start(timerObj);
-    setappdata(fig, 'response', NaN);
-
-    % --- Wait until user clicks a button or closes figure ---
-    waitfor(fig, 'UserData', false); % Esc closes OR set response
-
-    % Stop timer
-    if isvalid(timerObj)
-        stop(timerObj);
-        delete(timerObj);
-    end
-
-    % Get response
-    if isappdata(fig, 'response')
-        response = getappdata(fig, 'response');
-    end
-
-    % Close figure
-    if isvalid(fig)
-        delete(fig);
-    end
-
-    % --- Nested function for frame update ---
-    function updateFrames()
-        if ~ishandle(fig) || ~get(fig, 'UserData')
-            set(fig, 'UserData', false);
-            return;
+        % find frames2
+        frames2 = [];
+        for ii = 1:size(files_tgt,1)
+            tgt_str = strrep(num2str(round(groups(k).ft(j),2)), '.', '_');
+            if contains(files_tgt(ii).name, tgt_str)
+                load(fullfile(files_tgt(ii).folder, files_tgt(ii).name)); %#ok<LOAD>
+                frames2 = frames;
+                break;
+            end
         end
-        k = mod(k, nFrames) + 1;
-        set(h1, 'CData', frames1(k).cdata);
-        set(h2, 'CData', frames2(k).cdata);
-        drawnow limitrate nocallbacks;
+
+        if isempty(frames1) || isempty(frames2)
+            warning('Missing frames for candidate (%d,%d). Skipping...', i, j);
+            responses(m) = NaN;
+            continue;
+        end
+
+        % Play the animation and wait for user's button press
+        responses(m) = playTwoAnimations(frames1, frames2, 30);
+        % responses(m) is 1 (accept), 0 (reject) or NaN/empty if closed without answer
     end
+
+    % ---------- 3) Apply responses to groups(k).candidates (outside i/j loops) ----------
+    % Note: apply accepts first, then rejects. If multiple accepts exist on same row,
+    % the last processed accept will set that (i,j) to 1 and zero the row.
+    for m = 1:nCandidates
+        i = idx_i(m);
+        j = idx_j(m);
+        r = responses(m);
+
+        if isnan(r)
+            % do nothing (or handle as desired)
+            continue;
+        end
+
+        if r == 1
+            % Accept: zero whole row, then keep this one entry
+            groups(k).candidates(i, :) = 0;
+            groups(k).candidates(i, j) = 1;
+        elseif r == 0
+            % Reject: set this entry to zero
+            groups(k).candidates(i, j) = 0;
+        end
+    end
+
+    disp('Review finished. groups(k).candidates updated.');
 end
