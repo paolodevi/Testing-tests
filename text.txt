@@ -1,75 +1,166 @@
-k = 2;
+function groups = reviewCandidates(groups, k, files_ref, files_tgt, fps)
+% Launch all candidate animations simultaneously.
+% Each window has ✓/✗ controls that update groups(k).candidates live.
 
-% ---------- 1) Build list of candidate (i,j) pairs to review ----------
-[idx_i, idx_j] = find(groups(k).candidates == 1);
-nCandidates = numel(idx_i);
+if nargin < 5, fps = 30; end
+cand = groups(k).candidates;
+[nI, nJ] = size(cand);
 
-if nCandidates == 0
-    disp('No candidates to review.');
-else
-    % Prepare containers
-    responses = nan(nCandidates,1); % 1 = accept, 0 = reject, NaN = no decision/closed
+% Shared handle object so changes propagate to all windows
+shared = struct();
+shared.groups = groups;
+shared.k = k;
+shared.files_ref = files_ref;
+shared.files_tgt = files_tgt;
+shared.fps = fps;
+shared.handles = gobjects(nI,nJ);  % to store figure handles
 
-    % ---------- 2) Iterate the candidate list and show animations ----------
-    for m = 1:nCandidates
-        i = idx_i(m);
-        j = idx_j(m);
-
-        % find frames1
-        frames1 = [];
-        for ii = 1:size(files_ref,1)
-            ref_str = strrep(num2str(round(groups(k).fr(i),2)), '.', '_');
-            if contains(files_ref(ii).name, ref_str)
-                load(fullfile(files_ref(ii).folder, files_ref(ii).name)); %#ok<LOAD>
-                frames1 = frames;
-                break;
-            end
-        end
-
-        % find frames2
-        frames2 = [];
-        for ii = 1:size(files_tgt,1)
-            tgt_str = strrep(num2str(round(groups(k).ft(j),2)), '.', '_');
-            if contains(files_tgt(ii).name, tgt_str)
-                load(fullfile(files_tgt(ii).folder, files_tgt(ii).name)); %#ok<LOAD>
-                frames2 = frames;
-                break;
-            end
-        end
-
-        if isempty(frames1) || isempty(frames2)
-            warning('Missing frames for candidate (%d,%d). Skipping...', i, j);
-            responses(m) = NaN;
-            continue;
-        end
-
-        % Play the animation and wait for user's button press
-        responses(m) = playTwoAnimations(frames1, frames2, 30);
-        % responses(m) is 1 (accept), 0 (reject) or NaN/empty if closed without answer
-    end
-
-    % ---------- 3) Apply responses to groups(k).candidates (outside i/j loops) ----------
-    % Note: apply accepts first, then rejects. If multiple accepts exist on same row,
-    % the last processed accept will set that (i,j) to 1 and zero the row.
-    for m = 1:nCandidates
-        i = idx_i(m);
-        j = idx_j(m);
-        r = responses(m);
-
-        if isnan(r)
-            % do nothing (or handle as desired)
-            continue;
-        end
-
-        if r == 1
-            % Accept: zero whole row, then keep this one entry
-            groups(k).candidates(i, :) = 0;
-            groups(k).candidates(i, j) = 1;
-        elseif r == 0
-            % Reject: set this entry to zero
-            groups(k).candidates(i, j) = 0;
+% Launch all candidate animations
+for i = 1:nI
+    for j = 1:nJ
+        if cand(i,j)==1
+            shared.handles(i,j) = launchAnimation(shared, i, j);
         end
     end
+end
 
-    disp('Review finished. groups(k).candidates updated.');
+% Wait until all figures are closed
+waitfor(findall(0, 'Type', 'figure', '-not', 'Tag', 'MATLAB_Hidden'));
+
+% Retrieve modified structure
+groups = shared.groups;
+
+disp('All animations reviewed.');
+end
+
+
+%% ---------------------------------------------------------------
+function fig = launchAnimation(shared, i, j)
+% Launch one animation window for candidate (i,j)
+
+k = shared.k;
+fps = shared.fps;
+files_ref = shared.files_ref;
+files_tgt = shared.files_tgt;
+groups = shared.groups;
+
+% --- Load frames1 ---
+frames1 = [];
+for ii = 1:numel(files_ref)
+    ref_str = strrep(num2str(round(groups(k).fr(i),2)), '.', '_');
+    if contains(files_ref(ii).name, ref_str)
+        S = load(fullfile(files_ref(ii).folder, files_ref(ii).name));
+        frames1 = S.frames;
+        break;
+    end
+end
+
+% --- Load frames2 ---
+frames2 = [];
+for ii = 1:numel(files_tgt)
+    tgt_str = strrep(num2str(round(groups(k).ft(j),2)), '.', '_');
+    if contains(files_tgt(ii).name, tgt_str)
+        S = load(fullfile(files_tgt(ii).folder, files_tgt(ii).name));
+        frames2 = S.frames;
+        break;
+    end
+end
+
+if isempty(frames1) || isempty(frames2)
+    warning('Missing frames for candidate (%d,%d)', i, j);
+    fig = gobjects(0);
+    return;
+end
+
+nFrames = min(length(frames1), length(frames2));
+dt = 1 / fps;
+
+fig = figure('Name', sprintf('Candidate (%d,%d)', i, j), ...
+             'NumberTitle', 'off', 'Color', 'w', 'MenuBar', 'none', ...
+             'UserData', true);
+
+t = tiledlayout(fig, 2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+nexttile(t, 1);
+h1 = imshow(frames1(1).cdata, 'Border', 'tight');
+title(sprintf('Reference (%d)', i));
+
+nexttile(t, 2);
+h2 = imshow(frames2(1).cdata, 'Border', 'tight');
+title(sprintf('Target (%d,%d)', i, j));
+
+axis image off;
+
+% ✓ button
+uicontrol('Style', 'pushbutton', 'String', '✓', ...
+    'ForegroundColor', 'green', 'FontSize', 20, ...
+    'Units', 'normalized', 'Position', [0.82 0.6 0.15 0.15], ...
+    'Callback', @(~,~) acceptCallback(shared, i, j));
+
+% ✗ button
+uicontrol('Style', 'pushbutton', 'String', 'X', ...
+    'ForegroundColor', 'red', 'FontSize', 20, ...
+    'Units', 'normalized', 'Position', [0.82 0.3 0.15 0.15], ...
+    'Callback', @(~,~) rejectCallback(shared, i, j));
+
+% Playback timer
+timerObj = timer('ExecutionMode','fixedRate', 'Period', dt, ...
+                 'TimerFcn',@(~,~) updateFrames());
+
+start(timerObj);
+
+% Nested function: playback update
+kFrame = 1;
+    function updateFrames()
+        if ~ishandle(fig)
+            stop(timerObj);
+            delete(timerObj);
+            return;
+        end
+        kFrame = mod(kFrame, nFrames) + 1;
+        set(h1,'CData',frames1(kFrame).cdata);
+        set(h2,'CData',frames2(kFrame).cdata);
+        drawnow limitrate nocallbacks;
+    end
+end
+
+
+%% ---------------------------------------------------------------
+function acceptCallback(shared, i, j)
+% Green ✓ pressed: accept candidate (i,j)
+fprintf('Accepted candidate (%d,%d)\n', i, j);
+
+k = shared.k;
+groups = shared.groups;
+
+% Zero entire row, then set (i,j)=1
+groups(k).candidates(i, :) = 0;
+groups(k).candidates(i, j) = 1;
+
+% Close all other animations from this row
+handles = shared.handles;
+for jj = 1:size(handles,2)
+    if isgraphics(handles(i,jj))
+        try, close(handles(i,jj)); end
+    end
+end
+
+shared.groups = groups;  % update shared state
+end
+
+
+function rejectCallback(shared, i, j)
+% Red ✗ pressed: reject candidate (i,j)
+fprintf('Rejected candidate (%d,%d)\n', i, j);
+
+k = shared.k;
+groups = shared.groups;
+groups(k).candidates(i, j) = 0;
+shared.groups = groups;
+
+% Close only this window
+handles = shared.handles;
+if isgraphics(handles(i,j))
+    try, close(handles(i,j)); end
+end
 end
