@@ -1,64 +1,146 @@
-function [imax, jmax] = explore_matrix(A, i_start, j_start)
-% EXPLORE_MATRIX explores a binary matrix A starting from (i_start, j_start)
-% and finds the furthest indices (imax, jmax) reached by iterative exploration.
-%
-% The exploration rules:
-% - Start at (i_start, j_start) where A(i_start,j_start) == 1
-% - From each current point, search:
-%       * to the right (same row, increasing column)
-%       * downward (same column, increasing row)
-%   to find the next 1 in each direction.
-% - Repeat for each newly found point until no new points are discovered.
+k = 2;
 
-    % Check input validity
-    if A(i_start, j_start) ~= 1
-        error('Starting point (i_start, j_start) must contain a 1.');
-    end
+for i = 1:size(groups(k).candidates, 1)
+    for j = 1:size(groups(k).candidates, 2)
 
-    [nRows, nCols] = size(A);
+        if groups(k).candidates(i, j)
 
-    % Store visited points
-    visited = false(nRows, nCols);
-    visited(i_start, j_start) = true;
-
-    % Queue of points to explore (each row = [i, j])
-    toExplore = [i_start, j_start];
-
-    % Initialize maximum indices
-    imax = i_start;
-    jmax = j_start;
-
-    % Loop until no new points are found
-    while ~isempty(toExplore)
-        newPoints = [];
-        for k = 1:size(toExplore, 1)
-            i = toExplore(k, 1);
-            j = toExplore(k, 2);
-
-            % Search to the right (same row)
-            next_j = find(A(i, j+1:end) == 1, 1, 'first');
-            if ~isempty(next_j)
-                next_j = j + next_j;
-                if ~visited(i, next_j)
-                    newPoints = [newPoints; i, next_j];
-                    visited(i, next_j) = true;
-                    jmax = max(jmax, next_j);
+            % --- Reference conditions ---
+            frames1 = [];
+            for ii = 1:size(files_ref, 1)
+                ref_str = strrep(num2str(round(groups(k).fr(i), 2)), '.', '_');
+                if contains(files_ref(ii).name, ref_str)
+                    load(fullfile(files_ref(ii).folder, files_ref(ii).name));
+                    frames1 = frames;
+                    break;
                 end
             end
 
-            % Search downward (same column)
-            next_i = find(A(i+1:end, j) == 1, 1, 'first');
-            if ~isempty(next_i)
-                next_i = i + next_i;
-                if ~visited(next_i, j)
-                    newPoints = [newPoints; next_i, j];
-                    visited(next_i, j) = true;
-                    imax = max(imax, next_i);
+            % --- Target conditions ---
+            frames2 = [];
+            for ii = 1:size(files_tgt, 1)
+                tgt_str = strrep(num2str(round(groups(k).ft(j), 2)), '.', '_');
+                if contains(files_tgt(ii).name, tgt_str)
+                    load(fullfile(files_tgt(ii).folder, files_tgt(ii).name));
+                    frames2 = frames;
+                    break;
                 end
+            end
+
+            if isempty(frames1) || isempty(frames2)
+                warning('Missing frames for candidate (%d,%d). Skipping...', i, j);
+                continue;
+            end
+
+            % --- Play both animations and wait for response ---
+            response = playTwoAnimations(frames1, frames2, 45);
+
+            % --- Update candidate matrix based on button pressed ---
+            if response == 1
+                % ✅ accepted
+                groups(k).candidates(i, :) = 0;  % zero entire row
+                groups(k).candidates(i, j) = 1;  % keep accepted one
+                fprintf('Accepted candidate (%d, %d). Row %d reset.\n', i, j, i);
+                break; % stop evaluating other j in this row
+            elseif response == 0
+                % ❌ rejected
+                groups(k).candidates(i, j) = 0;
+                fprintf('Rejected candidate (%d, %d).\n', i, j);
+            else
+                fprintf('Closed without decision (%d, %d).\n', i, j);
             end
         end
+    end
+end
 
-        % Continue exploring newly found points
-        toExplore = newPoints;
+
+%% ================================================================
+% Function: playTwoAnimations
+% Returns 1 = accepted (green ✓), 0 = rejected (red X)
+% ================================================================
+function response = playTwoAnimations(frames1, frames2, fps)
+
+    if nargin < 3, fps = 30; end
+
+    nFrames = min(length(frames1), length(frames2));
+    scr = get(0, 'ScreenSize');
+
+    figWidth  = 0.8 * scr(3);
+    figHeight = 0.8 * scr(4);
+    figLeft   = (scr(3) - figWidth) / 2;
+    figBottom = (scr(4) - figHeight) / 2;
+
+    % Create figure window
+    fig = figure('Position', [figLeft, figBottom, figWidth, figHeight], ...
+                 'Color', 'w', 'NumberTitle', 'off', ...
+                 'UserData', true);
+
+    set(fig, 'KeyPressFcn', @(src, evt) ...
+        set(src, 'UserData', ~strcmp(evt.Key, 'escape')));
+
+    t = tiledlayout(fig, 2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    % --- Display both animations ---
+    nexttile(t, 1);
+    h1 = imshow(frames1(1).cdata, 'Border', 'tight');
+    title('Reference Configuration');
+    axis image off;
+
+    nexttile(t, 2);
+    h2 = imshow(frames2(1).cdata, 'Border', 'tight');
+    title('Target Configuration');
+    axis image off;
+
+    dt = 1 / fps;
+    k = 1;
+    response = NaN;
+
+    % --- Button callbacks ---
+    uicontrol('Style', 'pushbutton', 'String', '✓', ...
+        'ForegroundColor', 'green', 'FontSize', 30, ...
+        'Units', 'normalized', 'Position', [0.82 0.60 0.15 0.15], ...
+        'Callback', @(~,~) setappdata(fig, 'response', 1));
+
+    uicontrol('Style', 'pushbutton', 'String', 'X', ...
+        'ForegroundColor', 'red', 'FontSize', 30, ...
+        'Units', 'normalized', 'Position', [0.82 0.30 0.15 0.15], ...
+        'Callback', @(~,~) setappdata(fig, 'response', 0));
+
+    % --- Timer for animation ---
+    timerObj = timer('ExecutionMode', 'fixedRate', 'Period', dt, ...
+                     'TimerFcn', @(~,~) updateFrames());
+
+    start(timerObj);
+    setappdata(fig, 'response', NaN);
+
+    % --- Wait until user clicks a button or closes figure ---
+    waitfor(fig, 'UserData', false); % Esc closes OR set response
+
+    % Stop timer
+    if isvalid(timerObj)
+        stop(timerObj);
+        delete(timerObj);
+    end
+
+    % Get response
+    if isappdata(fig, 'response')
+        response = getappdata(fig, 'response');
+    end
+
+    % Close figure
+    if isvalid(fig)
+        delete(fig);
+    end
+
+    % --- Nested function for frame update ---
+    function updateFrames()
+        if ~ishandle(fig) || ~get(fig, 'UserData')
+            set(fig, 'UserData', false);
+            return;
+        end
+        k = mod(k, nFrames) + 1;
+        set(h1, 'CData', frames1(k).cdata);
+        set(h2, 'CData', frames2(k).cdata);
+        drawnow limitrate nocallbacks;
     end
 end
