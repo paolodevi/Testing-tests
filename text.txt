@@ -1,36 +1,65 @@
-What’s happening here is that each window has its own copy of the data in its function workspace.
-When you click ✓ or ✗, those callbacks modify a local copy of shared, not the one the main function is holding, and then close only runs inside that scope.
+Perfect — that’s the exact right debugging observation, and you’re 100% correct:
+If the figures close properly but groups(k).candidates doesn’t change, it means the callbacks did run, but the edits stayed inside the handle object and never made it back into the variable you see outside the function.
 
-MATLAB’s functions don’t share variables by reference unless you make them objects or nested functions.
-The easiest way to get the “live shared state + window control” you want is to wrap your data in a handle class. Handle objects are passed by reference, so every callback sees and modifies the same instance.
+Let’s unpack this carefully and fix it so that the updates persist in your workspace.
 
 
 ---
 
-Step-by-step fix
+⚙️ What’s happening
 
-1. Make a tiny handle class for shared state
+When you run:
 
-Save this in a new file SharedState.m:
+groups = reviewCandidates(groups, k, files_ref, files_tgt, fps);
+
+Inside reviewCandidates, we have:
+
+shared.groups = groups;   % copy of your struct into a handle
+...
+groups = shared.groups;   % copy back out at the end
+
+✅ The callbacks modify shared.groups(k).candidates
+❌ But reviewCandidates only returns its own local copy of shared.groups after the figures are closed.
+
+That’s fine — if the function runs to the waitfor(...) and then returns.
+However, if your animations close asynchronously (e.g., you press ✓ and figures close but MATLAB hasn’t hit the waitfor yet), it might not capture the updates properly before returning.
+
+So, we’ll fix it to ensure:
+
+1. Updates propagate instantly to the shared handle.
+
+
+2. When all animations close, we reliably return the final updated groups.
+
+
+3. reviewCandidates doesn’t exit early.
+
+
+
+
+---
+
+✅ Corrected structure (minimal but robust)
+
+Here’s how to fix this cleanly.
+
+Step 1. Keep using the SharedState handle (same as before)
 
 classdef SharedState < handle
     properties
         groups
         k
         handles
+        done = false
     end
 end
 
 
 ---
 
-2. Use that handle inside your main function
-
-Here’s a corrected version of the function;
-everything now updates the same SharedState instance, and the figures close correctly.
+Step 2. Modify reviewCandidates so it waits properly
 
 function groups = reviewCandidates(groups, k, files_ref, files_tgt, fps)
-% Launch all candidate animations at once.
 if nargin < 5, fps = 30; end
 
 cand = groups(k).candidates;
@@ -41,7 +70,7 @@ shared.groups  = groups;
 shared.k       = k;
 shared.handles = gobjects(nI,nJ);
 
-% ---- Launch all figures ----
+% Launch all animations
 for i = 1:nI
     for j = 1:nJ
         if cand(i,j)==1
@@ -50,90 +79,23 @@ for i = 1:nI
     end
 end
 
-% Wait until all are closed
-waitfor(findall(0,'Type','figure','-not','Tag','MATLAB_Hidden'));
-
-groups = shared.groups;
-disp('All animations reviewed and groups updated.');
+% Wait until all figures are closed
+while any(isgraphics(shared.handles(:)))
+    pause(0.2);  % give callbacks time to run
 end
+
+% Final update
+groups = shared.groups;
+end
+
+> 💡 This change ensures we “poll” until all figure handles are closed — not just “waitfor any figure.”
+
+
 
 
 ---
 
-3. Update launchAnimation so it uses the handle and closes windows
-
-function fig = launchAnimation(shared, files_ref, files_tgt, fps, i, j)
-
-k = shared.k;
-groups = shared.groups;
-
-% ----- Load frames -----
-frames1 = [];
-for ii = 1:numel(files_ref)
-    ref_str = strrep(num2str(round(groups(k).fr(i),2)), '.', '_');
-    if contains(files_ref(ii).name, ref_str)
-        S = load(fullfile(files_ref(ii).folder, files_ref(ii).name));
-        frames1 = S.frames;
-        break;
-    end
-end
-
-frames2 = [];
-for ii = 1:numel(files_tgt)
-    tgt_str = strrep(num2str(round(groups(k).ft(j),2)), '.', '_');
-    if contains(files_tgt(ii).name, tgt_str)
-        S = load(fullfile(files_tgt(ii).folder, files_tgt(ii).name));
-        frames2 = S.frames;
-        break;
-    end
-end
-
-if isempty(frames1) || isempty(frames2)
-    warning('Missing frames for candidate (%d,%d)', i, j);
-    fig = gobjects(0);
-    return;
-end
-
-% ----- Create figure -----
-fig = figure('Name', sprintf('Candidate (%d,%d)', i, j), ...
-             'NumberTitle', 'off', 'Color', 'w', 'MenuBar', 'none');
-
-t = tiledlayout(fig,2,1,'TileSpacing','compact','Padding','compact');
-nexttile(t,1); h1 = imshow(frames1(1).cdata); title(sprintf('Ref %d',i));
-nexttile(t,2); h2 = imshow(frames2(1).cdata); title(sprintf('Tgt %d,%d',i,j));
-
-% ----- Buttons -----
-uicontrol('Style','pushbutton','String','✓','ForegroundColor','green',...
-    'FontSize',20,'Units','normalized','Position',[0.82 0.6 0.15 0.15],...
-    'Callback',@(~,~)acceptCallback(shared,i,j));
-uicontrol('Style','pushbutton','String','X','ForegroundColor','red',...
-    'FontSize',20,'Units','normalized','Position',[0.82 0.3 0.15 0.15],...
-    'Callback',@(~,~)rejectCallback(shared,i,j));
-
-% ----- Timer for playback -----
-nFrames = min(numel(frames1), numel(frames2));
-dt = 1/fps;
-kFrame = 1;
-
-timerObj = timer('ExecutionMode','fixedRate','Period',dt,...
-    'TimerFcn',@(~,~)updateFrames);
-start(timerObj);
-
-    function updateFrames
-        if ~ishandle(fig)
-            stop(timerObj); delete(timerObj); return;
-        end
-        kFrame = mod(kFrame, nFrames) + 1;
-        set(h1,'CData',frames1(kFrame).cdata);
-        set(h2,'CData',frames2(kFrame).cdata);
-        drawnow limitrate nocallbacks;
-    end
-end
-
-
----
-
-4. Shared callbacks that now really share the data
+Step 3. The callbacks (✓ and ✗) — these are correct already, but let’s double-check
 
 function acceptCallback(shared,i,j)
 fprintf('Accepted candidate (%d,%d)\n',i,j);
@@ -141,11 +103,10 @@ k = shared.k;
 shared.groups(k).candidates(i,:) = 0;
 shared.groups(k).candidates(i,j) = 1;
 
-% close all figures from this row
 handles = shared.handles;
 for jj = 1:size(handles,2)
     if isgraphics(handles(i,jj))
-        try close(handles(i,jj)); end
+        close(handles(i,jj));
     end
 end
 end
@@ -155,29 +116,43 @@ fprintf('Rejected candidate (%d,%d)\n',i,j);
 k = shared.k;
 shared.groups(k).candidates(i,j) = 0;
 
-% close only this one
 handles = shared.handles;
 if isgraphics(handles(i,j))
-    try close(handles(i,j)); end
+    close(handles(i,j));
 end
 end
+
+Now, since shared.groups is a handle property, every change in these callbacks directly updates the same shared object in memory — and when reviewCandidates finishes (after all figures are closed), it copies that back to your workspace variable.
 
 
 ---
 
-✅ What’s fixed
+🧪 Quick test (no animation needed)
 
-Shared data is live: The handle object shared means every callback edits the same groups structure.
+You can test it without frames:
 
-Windows actually close: The callbacks explicitly call close on the relevant figure handles.
+% Dummy setup
+groups(1).candidates = ones(2,3);
 
-Row logic works: ✓ zeros the row, keeps (i,j)=1, and closes every window from that row.
+% Dummy file lists
+files_ref = struct('name',{},'folder',{});
+files_tgt = struct('name',{},'folder',{});
 
-Main script waits: It pauses until all figures are closed, then returns the updated groups.
+% Run
+groups = reviewCandidates(groups, 1, files_ref, files_tgt, 2);
+disp(groups(1).candidates);
+
+Then press ✓ or ✗ on different windows:
+
+✓ should zero out the row except the chosen candidate.
+
+✗ should zero only that cell.
+
+When all windows are closed, groups(1).candidates should reflect all your choices.
 
 
 
 ---
 
-If you’d like, I can add an automatic tiling layout (so all candidate windows appear neatly on the screen instead of stacked). Would you like me to include that?
+Would you like me to add a visual indicator on each figure’s title or border that shows which candidate got accepted/rejected while it’s running? (That’s handy when you have many animations open.)
 
