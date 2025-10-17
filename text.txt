@@ -1,84 +1,62 @@
-Excellent — that’s a very nice enhancement 🔥
+Perfect clarification 💡 — so you want independent play/pause control per animation, not a global one.
 
-Here’s how to do it with minimal, local edits so that:
+That’s simple — we just move from a shared state (shared.playing) to a local flag per figure.
+Each figure will track its own playback status while sharing everything else (like groups and handles).
 
-each animation window starts paused,
-
-you can unpause or pause any combination of them using a shared toggle,
-
-the playback state is synchronized across all open animations.
-
+Here’s exactly what to change 👇
 
 
 ---
 
-🧠 Strategy
+✅ 1. Add a local variable in launchAnimation
 
-We’ll add one extra property and a tiny bit of logic:
+Inside launchAnimation, just after:
 
-1. Add a shared boolean property playing inside your SharedState handle.
+kFrame = 1;
 
+add this line:
 
-2. Create a Play/Pause button in every figure that toggles this global flag.
-
-
-3. Modify the animation timer’s updateFrames callback to run only when playing is true.
-
-
+isPlaying = false;   % each animation starts paused
 
 
 ---
 
-✅ 1. Add to your SharedState.m
+✅ 2. Add the Play/Pause button (independent per figure)
 
-classdef SharedState < handle
-    properties
-        groups
-        k
-        handles
-        done = false
-        playing = false   % <-- NEW: global play/pause state
-    end
-end
+Place this after your ✓ and ✗ button creation blocks:
 
-
----
-
-✅ 2. In launchAnimation, add a Play/Pause button
-
-Insert this after you create the ✓ and ✗ buttons:
-
-% Play / Pause button (toggles shared.playing)
-uicontrol('Style','pushbutton', ...
-    'String','▶/⏸', ...
+% Play / Pause toggle (independent per figure)
+playBtn = uicontrol('Style','pushbutton', ...
+    'String','▶ Play', ...
     'FontSize',18, ...
     'Units','normalized', ...
     'Position',[0.82 0.05 0.15 0.15], ...
-    'Callback',@(~,~) togglePlay(shared));
+    'Callback',@(~,~)togglePlay());
 
 
 ---
 
-✅ 3. Add a helper function (somewhere near your callbacks)
+✅ 3. Add the togglePlay nested function inside launchAnimation
 
-This can go in the same file as your other callbacks:
+Right after your other nested callbacks (updateFrames, etc.), add:
 
-function togglePlay(shared)
-% Toggle global play/pause for all animations
-shared.playing = ~shared.playing;
-if shared.playing
-    disp('▶ Playing all animations');
-else
-    disp('⏸ Paused all animations');
+function togglePlay()
+    isPlaying = ~isPlaying;
+    if isPlaying
+        playBtn.String = '⏸ Pause';
+    else
+        playBtn.String = '▶ Play';
+    end
 end
-end
+
+This keeps isPlaying scoped locally to that figure (so it’s independent).
 
 
 ---
 
 ✅ 4. Modify the updateFrames function
 
-Inside your launchAnimation, locate this part:
+In the same launchAnimation, find:
 
 function updateFrames
     if ~ishandle(fig)
@@ -90,14 +68,14 @@ function updateFrames
     drawnow limitrate nocallbacks;
 end
 
-…and replace it with:
+and change it to:
 
 function updateFrames
     if ~ishandle(fig)
         stop(timerObj); delete(timerObj); return;
     end
-    if ~shared.playing
-        return; % do nothing if paused
+    if ~isPlaying
+        return; % paused → skip frame update
     end
     kFrame = mod(kFrame, nFrames) + 1;
     set(h1,'CData',frames1(kFrame).cdata);
@@ -108,17 +86,21 @@ end
 
 ---
 
-🎬 Result
+✅ Behavior now
 
-All animations open paused by default.
+Each animation window starts paused.
 
-Click ▶/⏸ on any figure → all animations start/resume or pause simultaneously.
+Press ▶ Play to start playback for that figure only.
 
-You can toggle freely — timers keep running but only advance when shared.playing == true.
+The button changes to ⏸ Pause while playing.
+
+Press again to pause — the frame will freeze.
+
+All other animations are unaffected.
 
 
 
 ---
 
-Would you like the play/pause button to change its text dynamically (e.g., show “▶ Play” when paused and “⏸ Pause” when playing)? I can show that quick addition too.
+Would you like to also let the spacebar toggle play/pause for whichever animation window is active (so you can use the keyboard instead of the button)? I can give you a 1-liner addition for that too.
 
