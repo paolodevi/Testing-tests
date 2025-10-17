@@ -1,106 +1,91 @@
-Perfect clarification 💡 — so you want independent play/pause control per animation, not a global one.
+function [MAC_out, fig] = plot_mac(MAC, freqPhi, freqPsi, namePhi, namePsi, showValues, correction)
+% PLOT_MAC Visualize the MAC matrix as a heatmap with optional correction blending.
 
-That’s simple — we just move from a shared state (shared.playing) to a local flag per figure.
-Each figure will track its own playback status while sharing everything else (like groups and handles).
+    if nargin < 7
+        correction = [];
+    end
+    if nargin < 6 || isempty(showValues)
+        showValues = false;
+    end
 
-Here’s exactly what to change 👇
+    % Clean up inputs
+    MAC(~any(MAC,2), :) = [];
+    MAC(:, ~any(MAC,1)) = [];
+    freqPhi(freqPhi == 0) = [];
+    freqPsi(freqPsi == 0) = [];
 
+    nPhi = size(MAC, 1);
+    nPsi = size(MAC, 2);
+    xx = 1:nPhi;
+    yy = 1:nPsi;
 
----
+    % Initialize figure
+    fig = figure('Visible', 'on', 'Name', 'MAC Matrix Interactive');
+    ax = axes('Parent', fig);
+    hImg = imagesc(ax, yy, xx, MAC);
+    colormap(parula);
+    colorbar;
+    caxis([0 1]);
+    axis xy equal;
+    ylabel([namePhi, ' modes frequency [Hz]']);
+    xlabel([namePsi, ' modes frequency [Hz]']);
+    title('MAC Matrix (interactive)');
 
-✅ 1. Add a local variable in launchAnimation
+    % Set frequency labels if available
+    if ~isempty(freqPhi)
+        yticks(1:nPhi);
+        yticklabels(arrayfun(@(f) sprintf('%.2f',f), freqPhi, 'UniformOutput', false));
+        ytickangle(45);
+    end
+    if ~isempty(freqPsi)
+        xticks(1:nPsi);
+        xticklabels(arrayfun(@(f) sprintf('%.2f',f), freqPsi, 'UniformOutput', false));
+        xtickangle(45);
+    end
 
-Inside launchAnimation, just after:
+    % Optional overlay of numeric values
+    if showValues
+        hold on;
+        for i = 1:nPhi
+            for j = 1:nPsi
+                val = MAC(i,j);
+                if val > 0.1
+                    text(yy(j), xx(i), sprintf('%.2f', val), ...
+                         'HorizontalAlignment', 'center', ...
+                         'FontSize', 8, 'Color', 'w', 'FontWeight', 'bold');
+                end
+            end
+        end
+        hold off;
+    end
 
-kFrame = 1;
+    % --- Add slider if correction is provided ---
+    alphaVal = 0; % initial blend factor
+    if ~isempty(correction)
+        uicontrol('Style', 'text', 'String', 'Blend (0=MAC, 1=Correction)', ...
+                  'Units', 'normalized', 'Position', [0.25 0.02 0.5 0.04]);
 
-add this line:
+        slider = uicontrol('Style', 'slider', 'Min', 0, 'Max', 1, 'Value', alphaVal, ...
+                           'Units', 'normalized', 'Position', [0.25 0.0 0.5 0.03], ...
+                           'Callback', @update_blend);
+    end
 
-isPlaying = false;   % each animation starts paused
+    % Nested function to handle slider changes
+    function update_blend(src, ~)
+        alphaVal = src.Value;
+        newMAC = (1 - alphaVal) * MAC + alphaVal * correction;
+        set(hImg, 'CData', newMAC);
+        drawnow;
+    end
 
+    % --- Wait for figure close ---
+    uiwait(fig); % block until figure is closed
 
----
-
-✅ 2. Add the Play/Pause button (independent per figure)
-
-Place this after your ✓ and ✗ button creation blocks:
-
-% Play / Pause toggle (independent per figure)
-playBtn = uicontrol('Style','pushbutton', ...
-    'String','▶ Play', ...
-    'FontSize',18, ...
-    'Units','normalized', ...
-    'Position',[0.82 0.05 0.15 0.15], ...
-    'Callback',@(~,~)togglePlay());
-
-
----
-
-✅ 3. Add the togglePlay nested function inside launchAnimation
-
-Right after your other nested callbacks (updateFrames, etc.), add:
-
-function togglePlay()
-    isPlaying = ~isPlaying;
-    if isPlaying
-        playBtn.String = '⏸ Pause';
+    % Return last combined matrix
+    if isempty(correction)
+        MAC_out = MAC;
     else
-        playBtn.String = '▶ Play';
+        MAC_out = (1 - alphaVal) * MAC + alphaVal * correction;
     end
+
 end
-
-This keeps isPlaying scoped locally to that figure (so it’s independent).
-
-
----
-
-✅ 4. Modify the updateFrames function
-
-In the same launchAnimation, find:
-
-function updateFrames
-    if ~ishandle(fig)
-        stop(timerObj); delete(timerObj); return;
-    end
-    kFrame = mod(kFrame, nFrames) + 1;
-    set(h1,'CData',frames1(kFrame).cdata);
-    set(h2,'CData',frames2(kFrame).cdata);
-    drawnow limitrate nocallbacks;
-end
-
-and change it to:
-
-function updateFrames
-    if ~ishandle(fig)
-        stop(timerObj); delete(timerObj); return;
-    end
-    if ~isPlaying
-        return; % paused → skip frame update
-    end
-    kFrame = mod(kFrame, nFrames) + 1;
-    set(h1,'CData',frames1(kFrame).cdata);
-    set(h2,'CData',frames2(kFrame).cdata);
-    drawnow limitrate nocallbacks;
-end
-
-
----
-
-✅ Behavior now
-
-Each animation window starts paused.
-
-Press ▶ Play to start playback for that figure only.
-
-The button changes to ⏸ Pause while playing.
-
-Press again to pause — the frame will freeze.
-
-All other animations are unaffected.
-
-
-
----
-
-Would you like to also let the spacebar toggle play/pause for whichever animation window is active (so you can use the keyboard instead of the button)? I can give you a 1-liner addition for that too.
-
