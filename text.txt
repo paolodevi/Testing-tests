@@ -1,31 +1,23 @@
 function [MAC_out, fig] = plot_mac(MAC, freqPhi, freqPsi, namePhi, namePsi, showValues, correction)
 % PLOT_MAC Visualize the MAC matrix as a heatmap with optional correction blending.
-% Usage:
-%   fig = plot_mac(MAC, freqPhi, freqPsi, namePhi, namePsi)           % legacy: no blocking, no output matrix
-%   [MAC_out, fig] = plot_mac(..., showValues)                        % legacy with show values
-%   [MAC_out, fig] = plot_mac(..., showValues, correction)            % interactive slider; blocks until figure closed
+% Uses uifigure + uislider for vertical slider on the left.
 %
-% If correction is provided, a slider is shown and the returned MAC_out
-% is the final blended matrix after the figure is closed. If correction
-% is NOT provided, MAC_out is returned as empty and the function does not
-% block.
+% Usage:
+%   fig = plot_mac(MAC, freqPhi, freqPsi, namePhi, namePsi)          % legacy, no correction
+%   [MAC_out, fig] = plot_mac(..., showValues, correction)          % interactive slider if correction given
 
-    % ---------------------------
-    % Input handling / defaults
-    % ---------------------------
     if nargin < 6 || isempty(showValues)
         showValues = false;
     end
+
     haveCorrection = (nargin >= 7) && ~isempty(correction);
 
-    % Keep a copy of original MAC for blending
     MAC_orig = MAC;
 
-    % Remove zero rows/cols like original attempted to do
-    MAC(all(MAC == 0, 2), :) = [];   % remove zero rows
-    MAC(:, all(MAC == 0, 1)) = [];   % remove zero cols
+    % Remove zero rows/cols
+    MAC(all(MAC == 0, 2), :) = [];
+    MAC(:, all(MAC == 0, 1)) = [];
 
-    % Clean frequency vectors if provided
     if ~isempty(freqPhi)
         freqPhi(freqPhi == 0) = [];
     end
@@ -33,7 +25,6 @@ function [MAC_out, fig] = plot_mac(MAC, freqPhi, freqPsi, namePhi, namePsi, show
         freqPsi(freqPsi == 0) = [];
     end
 
-    % Validate sizes
     [nPhi, nPsi] = size(MAC);
     if haveCorrection
         if ~isequal(size(correction), [nPhi, nPsi])
@@ -41,19 +32,20 @@ function [MAC_out, fig] = plot_mac(MAC, freqPhi, freqPsi, namePhi, namePsi, show
         end
     end
 
-    % ---------------------------
-    % Create figure & heatmap
-    % ---------------------------
-    fig = figure('Name', 'MAC Matrix Interactive', 'NumberTitle', 'off', 'Visible', 'on');
-    ax = axes('Parent', fig);
+    % -----------------------------
+    % Create UI figure and axes
+    % -----------------------------
+    fig = uifigure('Name','MAC Matrix Interactive');
+    
+    % Make plot larger: axes take most of the space
+    ax = axes(fig, 'Position',[0.15 0.05 0.8 0.9]);  % leave space on left for vertical slider
     hImg = imagesc(ax, 1:nPsi, 1:nPhi, MAC);
     colormap(ax, parula);
-    colorbar('peer', ax);
-    caxis(ax, [0 1]); % MAC between 0 and 1
-    axis(ax, 'xy');   % low frequencies bottom-left
-    axis(ax, 'equal');
+    colorbar(ax);
+    caxis(ax, [0 1]);
+    axis(ax, 'xy', 'equal');
+    title(ax, 'MAC Matrix');
 
-    % labels (guard empty names)
     if nargin >= 4 && ~isempty(namePhi)
         ylabel(ax, [namePhi, ' modes frequency [Hz]']);
     else
@@ -64,11 +56,8 @@ function [MAC_out, fig] = plot_mac(MAC, freqPhi, freqPsi, namePhi, namePsi, show
     else
         xlabel(ax, 'Psi modes frequency [Hz]');
     end
-    title(ax, 'MAC Matrix');
 
-    % ---------------------------
-    % Tick labels (only if freq vectors provided)
-    % ---------------------------
+    % Tick labels
     if ~isempty(freqPhi)
         yticks(ax, 1:nPhi);
         yticklabels(ax, arrayfun(@(f) sprintf('%.2f', f), freqPhi, 'UniformOutput', false));
@@ -80,138 +69,109 @@ function [MAC_out, fig] = plot_mac(MAC, freqPhi, freqPsi, namePhi, namePsi, show
         xtickangle(ax, 45);
     end
 
-    % ---------------------------
-    % Numeric overlays (if requested)
-    % ---------------------------
-    textHandles = []; % will keep handles to text objects so we can update them
+    % Numeric overlays
+    textHandles = gobjects(nPhi, nPsi);
     if showValues
         hold(ax, 'on');
-        textHandles = gobjects(nPhi, nPsi);
         for i = 1:nPhi
             for j = 1:nPsi
                 val = MAC(i,j);
-                if val > 0.01 % show small threshold to avoid clutter; changed to 0.01 for better sensitivity
+                if val > 0.01
                     textHandles(i,j) = text(ax, j, i, sprintf('%.2f', val), ...
-                        'HorizontalAlignment', 'center', 'FontSize', 8, 'FontWeight', 'bold');
-                    % choose text color depending on background brightness:
-                    textColor = choose_text_color(val); % helper below
-                    set(textHandles(i,j), 'Color', textColor);
+                        'HorizontalAlignment','center','FontSize',8,'FontWeight','bold', ...
+                        'Color', choose_text_color(val));
                 else
-                    textHandles(i,j) = gobjects(1); % empty placeholder
+                    textHandles(i,j) = gobjects(1);
                 end
             end
         end
         hold(ax, 'off');
     end
 
-    % ---------------------------
-    % If no correction: behave like the past (do not block), return empty MAC_out
-    % ---------------------------
+    % -----------------------------
+    % No correction -> old behavior
+    % -----------------------------
     if ~haveCorrection
         MAC_out = [];
         return;
     end
 
-    % ---------------------------
-    % If correction exists: add slider and live updating overlay numbers.
-    % This mode blocks until figure closed; when closed, MAC_out returns final blended matrix.
-    % ---------------------------
+    % -----------------------------
+    % Create vertical slider on left
+    % -----------------------------
+    alphaVal = 0;
+    slider = uislider(fig, ...
+        'Orientation','vertical', ...
+        'Limits',[0 1], ...
+        'Value', alphaVal, ...
+        'Position',[20 50 3 400], ... % [x y width height] in pixels
+        'ValueChangedFcn', @(src,event) updateMAC(src.Value));
 
-    % Initial blend factor
-    alphaVal = 0.0;
+    % Label for slider
+    uilabel(fig,'Text','Blend α','Position',[5 460 60 20]);
 
-    % Create UI controls (label + slider + numeric display)
-    labelPos = [0.15 0.02 0.5 0.04];
-    sliderPos = [0.15 0.005 0.55 0.04];
-    txtPos = [0.72 0.02 0.12 0.04];
-
-    uicontrol('Style', 'text', 'Units', 'normalized', 'Position', labelPos, ...
-        'String', 'Blend α (0 = MAC_orig, 1 = correction)', 'BackgroundColor', get(fig, 'Color'));
-
-    slider = uicontrol('Style', 'slider', 'Units', 'normalized', 'Position', sliderPos, ...
-        'Min', 0, 'Max', 1, 'Value', alphaVal, 'Callback', @onSliderChange);
-
-    % small numeric readout of alpha
-    alphaDisplay = uicontrol('Style', 'text', 'Units', 'normalized', 'Position', txtPos, ...
-        'String', sprintf('α = %.2f', alphaVal), 'BackgroundColor', get(fig, 'Color'));
-
-    % store correction and originals in guidata so nested function can access robustly
+    % Store data in guidata
     data.MAC_orig = MAC_orig;
     data.correction = correction;
     data.textHandles = textHandles;
     data.hImg = hImg;
+    data.ax = ax;
+    data.showValues = showValues;
     guidata(fig, data);
 
-    % Make sure the figure closing resumes execution (uiwait/uiresume pattern)
-    set(fig, 'CloseRequestFcn', @(src,ev) close_and_resume(src));
-
-    % Block until figure closed
+    % Block until figure is closed
     uiwait(fig);
 
-    % After figure closed, compute final blended matrix and return it
+    % Return final blended matrix
     MAC_out = (1 - alphaVal) * MAC_orig + alphaVal * correction;
 
-    % ---------------------------
-    % Nested / local helper functions
-    % ---------------------------
-
-    function onSliderChange(src, ~)
-        % update alpha, image, and overlay numbers
-        alphaVal = get(src, 'Value');
-        set(alphaDisplay, 'String', sprintf('α = %.2f', alphaVal));
-
+    % -----------------------------
+    % Nested functions
+    % -----------------------------
+    function updateMAC(val)
+        alphaVal = val;
         d = guidata(fig);
         newMAC = (1 - alphaVal) * d.MAC_orig + alphaVal * d.correction;
         set(d.hImg, 'CData', newMAC);
-        drawnow;
 
-        % update text overlays if present
-        if showValues && ~isempty(d.textHandles)
+        if d.showValues && ~isempty(d.textHandles)
             for ii = 1:nPhi
                 for jj = 1:nPsi
                     th = d.textHandles(ii,jj);
                     if isgraphics(th)
-                        val = newMAC(ii,jj);
-                        set(th, 'String', sprintf('%.2f', val));
-                        % optionally change color for readability
-                        set(th, 'Color', choose_text_color(val));
+                        set(th, 'String', sprintf('%.2f', newMAC(ii,jj)), ...
+                            'Color', choose_text_color(newMAC(ii,jj)));
                     else
-                        % if previously there was no text because value was small,
-                        % create one now if bigger than threshold
-                        val = newMAC(ii,jj);
-                        if val > 0.01
-                            hold(ax, 'on');
-                            d.textHandles(ii,jj) = text(ax, jj, ii, sprintf('%.2f', val), ...
-                                'HorizontalAlignment', 'center', 'FontSize', 8, 'FontWeight', 'bold', ...
-                                'Color', choose_text_color(val));
-                            hold(ax, 'off');
+                        if newMAC(ii,jj) > 0.01
+                            hold(d.ax,'on');
+                            d.textHandles(ii,jj) = text(d.ax, jj, ii, sprintf('%.2f', newMAC(ii,jj)), ...
+                                'HorizontalAlignment','center','FontSize',8,'FontWeight','bold', ...
+                                'Color', choose_text_color(newMAC(ii,jj)));
+                            hold(d.ax,'off');
                         end
                     end
                 end
             end
-            % save updated textHandles back
-            guidata(fig, d);
+            guidata(fig,d);
         end
-    end
-
-    function close_and_resume(src)
-        % Custom close function: resume uiwait then delete figure
-        try
-            uiresume(src);
-        catch
-            % ignore if not waiting
-        end
-        delete(src);
+        drawnow;
     end
 
     function tc = choose_text_color(val)
-        % choose white for darker tiles and black for lighter ones
-        % we simply threshold at 0.5, but you can make it more sophisticated
+        % White for dark tiles, black for light tiles
         if val > 0.5
-            tc = [1 1 1]; % white
+            tc = [1 1 1];
         else
-            tc = [0 0 0]; % black
+            tc = [0 0 0];
         end
+    end
+
+    % Ensure uiresume on close
+    fig.CloseRequestFcn = @(src,event) close_and_resume(src);
+
+    function close_and_resume(fh)
+        try uiresume(fh); end
+        delete(fh);
     end
 
 end
