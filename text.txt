@@ -1,49 +1,35 @@
-Perfect — that’s the exact right debugging observation, and you’re 100% correct:
-If the figures close properly but groups(k).candidates doesn’t change, it means the callbacks did run, but the edits stayed inside the handle object and never made it back into the variable you see outside the function.
+Excellent — that’s a very nice enhancement 🔥
 
-Let’s unpack this carefully and fix it so that the updates persist in your workspace.
+Here’s how to do it with minimal, local edits so that:
+
+each animation window starts paused,
+
+you can unpause or pause any combination of them using a shared toggle,
+
+the playback state is synchronized across all open animations.
+
 
 
 ---
 
-⚙️ What’s happening
+🧠 Strategy
 
-When you run:
+We’ll add one extra property and a tiny bit of logic:
 
-groups = reviewCandidates(groups, k, files_ref, files_tgt, fps);
-
-Inside reviewCandidates, we have:
-
-shared.groups = groups;   % copy of your struct into a handle
-...
-groups = shared.groups;   % copy back out at the end
-
-✅ The callbacks modify shared.groups(k).candidates
-❌ But reviewCandidates only returns its own local copy of shared.groups after the figures are closed.
-
-That’s fine — if the function runs to the waitfor(...) and then returns.
-However, if your animations close asynchronously (e.g., you press ✓ and figures close but MATLAB hasn’t hit the waitfor yet), it might not capture the updates properly before returning.
-
-So, we’ll fix it to ensure:
-
-1. Updates propagate instantly to the shared handle.
+1. Add a shared boolean property playing inside your SharedState handle.
 
 
-2. When all animations close, we reliably return the final updated groups.
+2. Create a Play/Pause button in every figure that toggles this global flag.
 
 
-3. reviewCandidates doesn’t exit early.
+3. Modify the animation timer’s updateFrames callback to run only when playing is true.
 
 
 
 
 ---
 
-✅ Corrected structure (minimal but robust)
-
-Here’s how to fix this cleanly.
-
-Step 1. Keep using the SharedState handle (same as before)
+✅ 1. Add to your SharedState.m
 
 classdef SharedState < handle
     properties
@@ -51,108 +37,88 @@ classdef SharedState < handle
         k
         handles
         done = false
+        playing = false   % <-- NEW: global play/pause state
     end
 end
 
 
 ---
 
-Step 2. Modify reviewCandidates so it waits properly
+✅ 2. In launchAnimation, add a Play/Pause button
 
-function groups = reviewCandidates(groups, k, files_ref, files_tgt, fps)
-if nargin < 5, fps = 30; end
+Insert this after you create the ✓ and ✗ buttons:
 
-cand = groups(k).candidates;
-[nI,nJ] = size(cand);
+% Play / Pause button (toggles shared.playing)
+uicontrol('Style','pushbutton', ...
+    'String','▶/⏸', ...
+    'FontSize',18, ...
+    'Units','normalized', ...
+    'Position',[0.82 0.05 0.15 0.15], ...
+    'Callback',@(~,~) togglePlay(shared));
 
-shared = SharedState;
-shared.groups  = groups;
-shared.k       = k;
-shared.handles = gobjects(nI,nJ);
 
-% Launch all animations
-for i = 1:nI
-    for j = 1:nJ
-        if cand(i,j)==1
-            shared.handles(i,j) = launchAnimation(shared, files_ref, files_tgt, fps, i, j);
-        end
+---
+
+✅ 3. Add a helper function (somewhere near your callbacks)
+
+This can go in the same file as your other callbacks:
+
+function togglePlay(shared)
+% Toggle global play/pause for all animations
+shared.playing = ~shared.playing;
+if shared.playing
+    disp('▶ Playing all animations');
+else
+    disp('⏸ Paused all animations');
+end
+end
+
+
+---
+
+✅ 4. Modify the updateFrames function
+
+Inside your launchAnimation, locate this part:
+
+function updateFrames
+    if ~ishandle(fig)
+        stop(timerObj); delete(timerObj); return;
     end
+    kFrame = mod(kFrame, nFrames) + 1;
+    set(h1,'CData',frames1(kFrame).cdata);
+    set(h2,'CData',frames2(kFrame).cdata);
+    drawnow limitrate nocallbacks;
 end
 
-% Wait until all figures are closed
-while any(isgraphics(shared.handles(:)))
-    pause(0.2);  % give callbacks time to run
-end
+…and replace it with:
 
-% Final update
-groups = shared.groups;
-end
-
-> 💡 This change ensures we “poll” until all figure handles are closed — not just “waitfor any figure.”
-
-
-
-
----
-
-Step 3. The callbacks (✓ and ✗) — these are correct already, but let’s double-check
-
-function acceptCallback(shared,i,j)
-fprintf('Accepted candidate (%d,%d)\n',i,j);
-k = shared.k;
-shared.groups(k).candidates(i,:) = 0;
-shared.groups(k).candidates(i,j) = 1;
-
-handles = shared.handles;
-for jj = 1:size(handles,2)
-    if isgraphics(handles(i,jj))
-        close(handles(i,jj));
+function updateFrames
+    if ~ishandle(fig)
+        stop(timerObj); delete(timerObj); return;
     end
+    if ~shared.playing
+        return; % do nothing if paused
+    end
+    kFrame = mod(kFrame, nFrames) + 1;
+    set(h1,'CData',frames1(kFrame).cdata);
+    set(h2,'CData',frames2(kFrame).cdata);
+    drawnow limitrate nocallbacks;
 end
-end
-
-function rejectCallback(shared,i,j)
-fprintf('Rejected candidate (%d,%d)\n',i,j);
-k = shared.k;
-shared.groups(k).candidates(i,j) = 0;
-
-handles = shared.handles;
-if isgraphics(handles(i,j))
-    close(handles(i,j));
-end
-end
-
-Now, since shared.groups is a handle property, every change in these callbacks directly updates the same shared object in memory — and when reviewCandidates finishes (after all figures are closed), it copies that back to your workspace variable.
 
 
 ---
 
-🧪 Quick test (no animation needed)
+🎬 Result
 
-You can test it without frames:
+All animations open paused by default.
 
-% Dummy setup
-groups(1).candidates = ones(2,3);
+Click ▶/⏸ on any figure → all animations start/resume or pause simultaneously.
 
-% Dummy file lists
-files_ref = struct('name',{},'folder',{});
-files_tgt = struct('name',{},'folder',{});
-
-% Run
-groups = reviewCandidates(groups, 1, files_ref, files_tgt, 2);
-disp(groups(1).candidates);
-
-Then press ✓ or ✗ on different windows:
-
-✓ should zero out the row except the chosen candidate.
-
-✗ should zero only that cell.
-
-When all windows are closed, groups(1).candidates should reflect all your choices.
+You can toggle freely — timers keep running but only advance when shared.playing == true.
 
 
 
 ---
 
-Would you like me to add a visual indicator on each figure’s title or border that shows which candidate got accepted/rejected while it’s running? (That’s handy when you have many animations open.)
+Would you like the play/pause button to change its text dynamically (e.g., show “▶ Play” when paused and “⏸ Pause” when playing)? I can show that quick addition too.
 
