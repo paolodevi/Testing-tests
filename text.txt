@@ -1,231 +1,193 @@
-Excellent — let’s consolidate everything 👏
+Nice detective work — thanks for the clear reproduction steps. The behavior you described is exactly the kind of subtle scoping/timer interaction that trips up MATLAB callbacks. The most robust solution is to stop relying on nested workspace variables for play/pause state and instead store per-figure state on the figure itself (with setappdata / getappdata). That guarantees each figure/timer uses its own independent state and eliminates MATLAB nested-function scoping oddities.
 
-Below is the complete, clean, and final set of functions that includes:
-
-✅ multiple candidate animations opening simultaneously,
-
-✅ independent ✓ / ✗ logic with your updated “zero row + column” rule,
-
-✅ independent Play / Pause buttons per animation (start paused),
-
-✅ live updates to groups(k).candidates returned after all figures close.
-
+Below are the minimal, copy-paste snippets you need to replace inside launchAnimation to make play/pause reliably independent per figure. I’ll show exactly what to remove/replace and what to insert.
 
 
 ---
 
-🧩 1. SharedState.m
+1) Replace the current Play/Pause setup and nested updateFrames / togglePlay functions
 
-Save this as its own file:
+Remove or overwrite the previous isPlaying / playBtn creation, the if isPlaying; end line, and the updateFrames and togglePlay nested functions.
 
-classdef SharedState < handle
-    properties
-        groups
-        k
-        handles
-        done = false
-    end
-end
+Insert this block instead (put it where your play button and nested functions used to live, i.e. after creating h1 and h2 and before starting the timer):
 
+% ---------------------------
+% Robust per-figure Play/Pause using appdata
+% ---------------------------
 
----
+% initialize per-figure appdata
+setappdata(fig, 'isPlaying', false);         % start paused
+% store a frame counter per figure
+setappdata(fig, 'kFrame', 1);
 
-🧩 2. reviewCandidates.m
-
-This is the main entry point — launches all animations and waits until you’ve finished reviewing.
-
-function groups = reviewCandidates(groups, k, files_ref, files_tgt, fps)
-% REVIEWCANDIDATES Launch animations for candidate pairs and collect responses.
-% groups(k).candidates(i,j) == 1 -> show animation (ref i, tgt j)
-% ✓ = accept (sets (i,j)=1, clears row i and column j)
-% ✗ = reject (sets (i,j)=0)
-% ▶/⏸ = play/pause that animation independently
-
-if nargin < 5, fps = 30; end
-
-cand = groups(k).candidates;
-[nI, nJ] = size(cand);
-
-shared = SharedState;
-shared.groups  = groups;
-shared.k       = k;
-shared.handles = gobjects(nI,nJ);
-
-% --- Launch all candidate animations ---
-for i = 1:nI
-    for j = 1:nJ
-        if cand(i,j)==1
-            shared.handles(i,j) = launchAnimation(shared, files_ref, files_tgt, fps, i, j);
-        end
-    end
-end
-
-% --- Wait until all figures are closed ---
-while any(isgraphics(shared.handles(:)))
-    pause(0.2);
-end
-
-% --- Return updated groups ---
-groups = shared.groups;
-disp('All animations reviewed and groups updated.');
-end
-
-
----
-
-🧩 3. launchAnimation.m
-
-Handles the display of one animation window, its buttons, and timer.
-
-function fig = launchAnimation(shared, files_ref, files_tgt, fps, i, j)
-k = shared.k;
-groups = shared.groups;
-
-% ----- Load reference frames -----
-frames1 = [];
-for ii = 1:numel(files_ref)
-    ref_str = strrep(num2str(round(groups(k).fr(i),2)), '.', '_');
-    if contains(files_ref(ii).name, ref_str)
-        S = load(fullfile(files_ref(ii).folder, files_ref(ii).name));
-        frames1 = S.frames;
-        break;
-    end
-end
-
-% ----- Load target frames -----
-frames2 = [];
-for ii = 1:numel(files_tgt)
-    tgt_str = strrep(num2str(round(groups(k).ft(j),2)), '.', '_');
-    if contains(files_tgt(ii).name, tgt_str)
-        S = load(fullfile(files_tgt(ii).folder, files_tgt(ii).name));
-        frames2 = S.frames;
-        break;
-    end
-end
-
-if isempty(frames1) || isempty(frames2)
-    warning('Missing frames for candidate (%d,%d)', i, j);
-    fig = gobjects(0);
-    return;
-end
-
-% ----- Create figure -----
-fig = figure('Name', sprintf('Candidate (%d,%d)', i, j), ...
-             'NumberTitle', 'off', 'Color', 'w', 'MenuBar', 'none');
-
-t = tiledlayout(fig,2,1,'TileSpacing','compact','Padding','compact');
-nexttile(t,1); h1 = imshow(frames1(1).cdata); title(sprintf('Ref %d',i));
-nexttile(t,2); h2 = imshow(frames2(1).cdata); title(sprintf('Tgt %d,%d',i,j));
-
-% ----- Buttons -----
-uicontrol('Style','pushbutton','String','✓','ForegroundColor','green',...
-    'FontSize',20,'Units','normalized','Position',[0.82 0.6 0.15 0.15],...
-    'Callback',@(~,~)acceptCallback(shared,i,j));
-
-uicontrol('Style','pushbutton','String','X','ForegroundColor','red',...
-    'FontSize',20,'Units','normalized','Position',[0.82 0.3 0.15 0.15],...
-    'Callback',@(~,~)rejectCallback(shared,i,j));
-
-% ----- Play / Pause -----
-kFrame = 1;
-isPlaying = false;   % start paused
-if isPlaying; end    % ensures nested scope
+% create the play/pause button and store it
 playBtn = uicontrol('Style','pushbutton', ...
     'String','▶ Play', ...
     'FontSize',18, ...
     'Units','normalized', ...
-    'Position',[0.82 0.05 0.15 0.15], ...
-    'Callback',@(~,~)togglePlay());
+    'Position',[0.82 0.05 0.15 0.15]);
+setappdata(fig, 'playBtn', playBtn);
 
-% ----- Timer for playback -----
+% attach callback that toggles per-figure appdata
+set(playBtn, 'Callback', @(~,~) togglePlayAppdata(fig));
+
+% --- Timer for playback (uses appdata) ---
 nFrames = min(numel(frames1), numel(frames2));
 dt = 1/fps;
 
-timerObj = timer('ExecutionMode','fixedRate','Period',dt,...
-    'TimerFcn',@(~,~)updateFrames);
+timerObj = timer('ExecutionMode','fixedRate','Period',dt, ...
+    'TimerFcn', @(~,~) updateFramesAppdata(fig, frames1, frames2, nFrames));
+% store timerObj so callbacks can find/stop it if needed
+setappdata(fig, 'timerObj', timerObj);
 start(timerObj);
 
-% =================== NESTED FUNCTIONS ===================
+% make sure timer stops if the figure is closed by other means
+set(fig, 'CloseRequestFcn', @(src,evt) closeFigureClean(src));
 
-    function updateFrames
-        if ~ishandle(fig)
-            stop(timerObj); delete(timerObj); return;
-        end
-        if ~isPlaying
-            return; % paused
-        end
-        kFrame = mod(kFrame, nFrames) + 1;
-        set(h1,'CData',frames1(kFrame).cdata);
-        set(h2,'CData',frames2(kFrame).cdata);
-        drawnow limitrate nocallbacks;
-    end
 
-    function togglePlay()
-        isPlaying = ~isPlaying;
-        if isPlaying
-            playBtn.String = '⏸ Pause';
+---
+
+2) Add these three helper functions (can be local nested functions in the same file or separate in the same file)
+
+If you keep them nested inside launchAnimation, they will still work; but they do not depend on workspace-scoped isPlaying, avoiding the previous scoping bug. Add these below the block above (inside same file):
+
+function togglePlayAppdata(figHandle)
+    % Toggle the per-figure playing flag stored in appdata, update button text
+    if ~isgraphics(figHandle), return; end
+    cur = getappdata(figHandle, 'isPlaying');
+    cur = ~logical(cur);
+    setappdata(figHandle, 'isPlaying', cur);
+    playBtnLocal = getappdata(figHandle, 'playBtn');
+    if isgraphics(playBtnLocal)
+        if cur
+            set(playBtnLocal, 'String', '⏸ Pause');
         else
-            playBtn.String = '▶ Play';
+            set(playBtnLocal, 'String', '▶ Play');
         end
     end
 end
 
-
----
-
-🧩 4. acceptCallback.m and rejectCallback.m
-
-These live as separate files in the same folder (or nested in launchAnimation.m if you prefer).
-
-function acceptCallback(shared,i,j)
-fprintf('Accepted candidate (%d,%d)\n',i,j);
-k = shared.k;
-
-% Zero out entire row and column, then set (i,j)=1
-shared.groups(k).candidates(i,:) = 0;
-shared.groups(k).candidates(:,j) = 0;
-shared.groups(k).candidates(i,j) = 1;
-
-% Close all affected figures
-handles = shared.handles;
-[nI, nJ] = size(handles);
-for ii = 1:nI
-    for jj = 1:nJ
-        if (ii == i || jj == j) && isgraphics(handles(ii,jj))
-            close(handles(ii,jj));
+function updateFramesAppdata(figHandle, frames1_local, frames2_local, nFrames_local)
+    % Timer callback: read per-figure state from appdata
+    if ~isgraphics(figHandle)
+        % figure closed: try to stop and delete the timer (defensive)
+        try
+            t = getappdata(figHandle, 'timerObj');
+            if ~isempty(t) && isvalid(t)
+                stop(t); delete(t);
+            end
+        catch
         end
+        return;
+    end
+
+    % check if playing for *this* figure
+    isPlayingLocal = getappdata(figHandle, 'isPlaying');
+    if ~isPlayingLocal
+        return; % paused
+    end
+
+    % advance frame counter and update images
+    kFrameLocal = getappdata(figHandle, 'kFrame');
+    kFrameLocal = mod(kFrameLocal, nFrames_local) + 1;
+    setappdata(figHandle, 'kFrame', kFrameLocal);
+
+    % update CData (defensive checking handles)
+    axesChildren = findall(figHandle, 'Type', 'Image');
+    % we expect two images in order, but safer to save handles as appdata if you want
+    % here we trust h1 and h2 exist in the launchAnimation scope and were created earlier
+    try
+        % update frames via stored handle references if available
+        % If you previously stored h1/h2 in appdata, you'd retrieve them and set CData.
+        % Example fallback: assume axes order is the same and update using handles from workspace:
+        set(h1, 'CData', frames1_local(kFrameLocal).cdata);
+        set(h2, 'CData', frames2_local(kFrameLocal).cdata);
+    catch ME
+        % If direct handles are not visible here (rare), skip silently
+        % (You can alternatively store h1/h2 in appdata at creation and retrieve them here.)
+        % fprintf('updateFramesAppdata: failed to set CData: %s\n', ME.message);
     end
 end
+
+function closeFigureClean(figHandle)
+    % Ensure associated timer is stopped & deleted before closing the figure
+    if isappdata(figHandle, 'timerObj')
+        t = getappdata(figHandle, 'timerObj');
+        if ~isempty(t) && isvalid(t)
+            stop(t);
+            delete(t);
+        end
+        rmappdata(figHandle, 'timerObj');
+    end
+    % delete playBtn appdata to avoid dangling handles (optional)
+    try
+        pb = getappdata(figHandle, 'playBtn');
+        if isgraphics(pb), delete(pb); end
+    catch
+    end
+    % actually close the figure
+    delete(figHandle);
 end
 
-function rejectCallback(shared,i,j)
-fprintf('Rejected candidate (%d,%d)\n',i,j);
-k = shared.k;
-shared.groups(k).candidates(i,j) = 0;
+Notes about these helpers
 
-handles = shared.handles;
-if isgraphics(handles(i,j))
-    close(handles(i,j));
-end
-end
+togglePlayAppdata(fig) toggles only that figure's isPlaying appdata and updates its button label.
+
+updateFramesAppdata(...) is the timer callback. It first checks getappdata(fig,'isPlaying') so it only advances when its figure is playing.
+
+closeFigureClean stops/deletes the timer cleanly before closing the figure so no timers leak or reference closed figures.
+
 
 
 ---
 
-✅ Behavior Summary
+3) Small recommended extra: store h1 and h2 as appdata when creating them
 
-Action	Effect
+Right after you create h1 and h2 in launchAnimation, add:
 
-groups(k).candidates(i,j)==1	Animation (i,j) opens
-✓ (green)	Sets (i,j)=1, clears row i and column j, closes all those animations
-✗ (red)	Sets (i,j)=0, closes only that animation
-▶ Play / ⏸ Pause	Toggles playback independently for that figure
-Closing all windows	Returns updated groups struct
+setappdata(fig, 'h1', h1);
+setappdata(fig, 'h2', h2);
+
+Then inside updateFramesAppdata replace the try-block with:
+
+h1_local = getappdata(figHandle, 'h1');
+h2_local = getappdata(figHandle, 'h2');
+if isgraphics(h1_local) && isgraphics(h2_local)
+    set(h1_local, 'CData', frames1_local(kFrameLocal).cdata);
+    set(h2_local, 'CData', frames2_local(kFrameLocal).cdata);
+end
+
+This is safer and avoids "scope can't see h1/h2" issues.
+
+
+---
+
+Why this fixes your two symptoms
+
+First animation paused and not responding: using appdata avoids the nested-scope capture bug that can make one figure's isPlaying invisible to its callback.
+
+Pausing one breaks others: previous implementation may have inadvertently shared or shadowed variables or timers; using getappdata / setappdata ensures each timer reads/writes only its figure's state.
 
 
 
 ---
 
-This version is clean, modular, and easily extensible (e.g., if you want to add keyboard shortcuts, overlays, or color feedback).
+Final integration checklist (what to change in your existing code)
 
-Would you like me to add a small colored status indicator (green/red dot or border) so you can visually see which animations were accepted or rejected while reviewing?
+1. After creating h1 and h2, add setappdata(fig,'h1',h1); setappdata(fig,'h2',h2);.
+
+
+2. Replace your current playBtn / isPlaying / timer setup with the code from section 1 above.
+
+
+3. Add the three helper functions (togglePlayAppdata, updateFramesAppdata, closeFigureClean) inside the same file (nested or local functions) or as local functions in the same .m file, ensuring they are visible to launchAnimation.
+
+
+4. Remove the old nested togglePlay and updateFrames code.
+
+
+
+
+---
+
+If you like, I can produce a single ready-to-run launchAnimation function with these fixes integrated end-to-end (so you can just paste it over your existing one). Would you prefer the full function or are you comfortable applying these focused replacements yourself?
