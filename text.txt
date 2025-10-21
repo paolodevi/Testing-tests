@@ -1,177 +1,231 @@
-function [MAC_out, fig] = plot_mac(MAC, freqPhi, freqPsi, namePhi, namePsi, showValues, correction)
-% PLOT_MAC Visualize the MAC matrix as a heatmap with optional correction blending.
-% Uses uifigure + uislider for vertical slider on the left.
-%
-% Usage:
-%   fig = plot_mac(MAC, freqPhi, freqPsi, namePhi, namePsi)          % legacy, no correction
-%   [MAC_out, fig] = plot_mac(..., showValues, correction)          % interactive slider if correction given
+Excellent — let’s consolidate everything 👏
 
-    if nargin < 6 || isempty(showValues)
-        showValues = false;
+Below is the complete, clean, and final set of functions that includes:
+
+✅ multiple candidate animations opening simultaneously,
+
+✅ independent ✓ / ✗ logic with your updated “zero row + column” rule,
+
+✅ independent Play / Pause buttons per animation (start paused),
+
+✅ live updates to groups(k).candidates returned after all figures close.
+
+
+
+---
+
+🧩 1. SharedState.m
+
+Save this as its own file:
+
+classdef SharedState < handle
+    properties
+        groups
+        k
+        handles
+        done = false
     end
-
-    haveCorrection = (nargin >= 7) && ~isempty(correction);
-
-    MAC_orig = MAC;
-
-    % Remove zero rows/cols
-    MAC(all(MAC == 0, 2), :) = [];
-    MAC(:, all(MAC == 0, 1)) = [];
-
-    if ~isempty(freqPhi)
-        freqPhi(freqPhi == 0) = [];
-    end
-    if ~isempty(freqPsi)
-        freqPsi(freqPsi == 0) = [];
-    end
-
-    [nPhi, nPsi] = size(MAC);
-    if haveCorrection
-        if ~isequal(size(correction), [nPhi, nPsi])
-            error('correction must have same size as MAC (after removing zero rows/cols).');
-        end
-    end
-
-    % -----------------------------
-    % Create UI figure and axes
-    % -----------------------------
-    fig = uifigure('Name','MAC Matrix Interactive');
-    
-    % Make plot larger: axes take most of the space
-    ax = axes(fig, 'Position',[0.15 0.05 0.8 0.9]);  % leave space on left for vertical slider
-    hImg = imagesc(ax, 1:nPsi, 1:nPhi, MAC);
-    colormap(ax, parula);
-    colorbar(ax);
-    caxis(ax, [0 1]);
-    axis(ax, 'xy', 'equal');
-    title(ax, 'MAC Matrix');
-
-    if nargin >= 4 && ~isempty(namePhi)
-        ylabel(ax, [namePhi, ' modes frequency [Hz]']);
-    else
-        ylabel(ax, 'Phi modes frequency [Hz]');
-    end
-    if nargin >= 5 && ~isempty(namePsi)
-        xlabel(ax, [namePsi, ' modes frequency [Hz]']);
-    else
-        xlabel(ax, 'Psi modes frequency [Hz]');
-    end
-
-    % Tick labels
-    if ~isempty(freqPhi)
-        yticks(ax, 1:nPhi);
-        yticklabels(ax, arrayfun(@(f) sprintf('%.2f', f), freqPhi, 'UniformOutput', false));
-        ytickangle(ax, 45);
-    end
-    if ~isempty(freqPsi)
-        xticks(ax, 1:nPsi);
-        xticklabels(ax, arrayfun(@(f) sprintf('%.2f', f), freqPsi, 'UniformOutput', false));
-        xtickangle(ax, 45);
-    end
-
-    % Numeric overlays
-    textHandles = gobjects(nPhi, nPsi);
-    if showValues
-        hold(ax, 'on');
-        for i = 1:nPhi
-            for j = 1:nPsi
-                val = MAC(i,j);
-                if val > 0.01
-                    textHandles(i,j) = text(ax, j, i, sprintf('%.2f', val), ...
-                        'HorizontalAlignment','center','FontSize',8,'FontWeight','bold', ...
-                        'Color', choose_text_color(val));
-                else
-                    textHandles(i,j) = gobjects(1);
-                end
-            end
-        end
-        hold(ax, 'off');
-    end
-
-    % -----------------------------
-    % No correction -> old behavior
-    % -----------------------------
-    if ~haveCorrection
-        MAC_out = [];
-        return;
-    end
-
-    % -----------------------------
-    % Create vertical slider on left
-    % -----------------------------
-    alphaVal = 0;
-    slider = uislider(fig, ...
-        'Orientation','vertical', ...
-        'Limits',[0 1], ...
-        'Value', alphaVal, ...
-        'Position',[20 50 3 400], ... % [x y width height] in pixels
-        'ValueChangedFcn', @(src,event) updateMAC(src.Value));
-
-    % Label for slider
-    uilabel(fig,'Text','Blend α','Position',[5 460 60 20]);
-
-    % Store data in guidata
-    data.MAC_orig = MAC_orig;
-    data.correction = correction;
-    data.textHandles = textHandles;
-    data.hImg = hImg;
-    data.ax = ax;
-    data.showValues = showValues;
-    guidata(fig, data);
-
-    % Block until figure is closed
-    uiwait(fig);
-
-    % Return final blended matrix
-    MAC_out = (1 - alphaVal) * MAC_orig + alphaVal * correction;
-
-    % -----------------------------
-    % Nested functions
-    % -----------------------------
-    function updateMAC(val)
-        alphaVal = val;
-        d = guidata(fig);
-        newMAC = (1 - alphaVal) * d.MAC_orig + alphaVal * d.correction;
-        set(d.hImg, 'CData', newMAC);
-
-        if d.showValues && ~isempty(d.textHandles)
-            for ii = 1:nPhi
-                for jj = 1:nPsi
-                    th = d.textHandles(ii,jj);
-                    if isgraphics(th)
-                        set(th, 'String', sprintf('%.2f', newMAC(ii,jj)), ...
-                            'Color', choose_text_color(newMAC(ii,jj)));
-                    else
-                        if newMAC(ii,jj) > 0.01
-                            hold(d.ax,'on');
-                            d.textHandles(ii,jj) = text(d.ax, jj, ii, sprintf('%.2f', newMAC(ii,jj)), ...
-                                'HorizontalAlignment','center','FontSize',8,'FontWeight','bold', ...
-                                'Color', choose_text_color(newMAC(ii,jj)));
-                            hold(d.ax,'off');
-                        end
-                    end
-                end
-            end
-            guidata(fig,d);
-        end
-        drawnow;
-    end
-
-    function tc = choose_text_color(val)
-        % White for dark tiles, black for light tiles
-        if val > 0.5
-            tc = [1 1 1];
-        else
-            tc = [0 0 0];
-        end
-    end
-
-    % Ensure uiresume on close
-    fig.CloseRequestFcn = @(src,event) close_and_resume(src);
-
-    function close_and_resume(fh)
-        try uiresume(fh); end
-        delete(fh);
-    end
-
 end
+
+
+---
+
+🧩 2. reviewCandidates.m
+
+This is the main entry point — launches all animations and waits until you’ve finished reviewing.
+
+function groups = reviewCandidates(groups, k, files_ref, files_tgt, fps)
+% REVIEWCANDIDATES Launch animations for candidate pairs and collect responses.
+% groups(k).candidates(i,j) == 1 -> show animation (ref i, tgt j)
+% ✓ = accept (sets (i,j)=1, clears row i and column j)
+% ✗ = reject (sets (i,j)=0)
+% ▶/⏸ = play/pause that animation independently
+
+if nargin < 5, fps = 30; end
+
+cand = groups(k).candidates;
+[nI, nJ] = size(cand);
+
+shared = SharedState;
+shared.groups  = groups;
+shared.k       = k;
+shared.handles = gobjects(nI,nJ);
+
+% --- Launch all candidate animations ---
+for i = 1:nI
+    for j = 1:nJ
+        if cand(i,j)==1
+            shared.handles(i,j) = launchAnimation(shared, files_ref, files_tgt, fps, i, j);
+        end
+    end
+end
+
+% --- Wait until all figures are closed ---
+while any(isgraphics(shared.handles(:)))
+    pause(0.2);
+end
+
+% --- Return updated groups ---
+groups = shared.groups;
+disp('All animations reviewed and groups updated.');
+end
+
+
+---
+
+🧩 3. launchAnimation.m
+
+Handles the display of one animation window, its buttons, and timer.
+
+function fig = launchAnimation(shared, files_ref, files_tgt, fps, i, j)
+k = shared.k;
+groups = shared.groups;
+
+% ----- Load reference frames -----
+frames1 = [];
+for ii = 1:numel(files_ref)
+    ref_str = strrep(num2str(round(groups(k).fr(i),2)), '.', '_');
+    if contains(files_ref(ii).name, ref_str)
+        S = load(fullfile(files_ref(ii).folder, files_ref(ii).name));
+        frames1 = S.frames;
+        break;
+    end
+end
+
+% ----- Load target frames -----
+frames2 = [];
+for ii = 1:numel(files_tgt)
+    tgt_str = strrep(num2str(round(groups(k).ft(j),2)), '.', '_');
+    if contains(files_tgt(ii).name, tgt_str)
+        S = load(fullfile(files_tgt(ii).folder, files_tgt(ii).name));
+        frames2 = S.frames;
+        break;
+    end
+end
+
+if isempty(frames1) || isempty(frames2)
+    warning('Missing frames for candidate (%d,%d)', i, j);
+    fig = gobjects(0);
+    return;
+end
+
+% ----- Create figure -----
+fig = figure('Name', sprintf('Candidate (%d,%d)', i, j), ...
+             'NumberTitle', 'off', 'Color', 'w', 'MenuBar', 'none');
+
+t = tiledlayout(fig,2,1,'TileSpacing','compact','Padding','compact');
+nexttile(t,1); h1 = imshow(frames1(1).cdata); title(sprintf('Ref %d',i));
+nexttile(t,2); h2 = imshow(frames2(1).cdata); title(sprintf('Tgt %d,%d',i,j));
+
+% ----- Buttons -----
+uicontrol('Style','pushbutton','String','✓','ForegroundColor','green',...
+    'FontSize',20,'Units','normalized','Position',[0.82 0.6 0.15 0.15],...
+    'Callback',@(~,~)acceptCallback(shared,i,j));
+
+uicontrol('Style','pushbutton','String','X','ForegroundColor','red',...
+    'FontSize',20,'Units','normalized','Position',[0.82 0.3 0.15 0.15],...
+    'Callback',@(~,~)rejectCallback(shared,i,j));
+
+% ----- Play / Pause -----
+kFrame = 1;
+isPlaying = false;   % start paused
+if isPlaying; end    % ensures nested scope
+playBtn = uicontrol('Style','pushbutton', ...
+    'String','▶ Play', ...
+    'FontSize',18, ...
+    'Units','normalized', ...
+    'Position',[0.82 0.05 0.15 0.15], ...
+    'Callback',@(~,~)togglePlay());
+
+% ----- Timer for playback -----
+nFrames = min(numel(frames1), numel(frames2));
+dt = 1/fps;
+
+timerObj = timer('ExecutionMode','fixedRate','Period',dt,...
+    'TimerFcn',@(~,~)updateFrames);
+start(timerObj);
+
+% =================== NESTED FUNCTIONS ===================
+
+    function updateFrames
+        if ~ishandle(fig)
+            stop(timerObj); delete(timerObj); return;
+        end
+        if ~isPlaying
+            return; % paused
+        end
+        kFrame = mod(kFrame, nFrames) + 1;
+        set(h1,'CData',frames1(kFrame).cdata);
+        set(h2,'CData',frames2(kFrame).cdata);
+        drawnow limitrate nocallbacks;
+    end
+
+    function togglePlay()
+        isPlaying = ~isPlaying;
+        if isPlaying
+            playBtn.String = '⏸ Pause';
+        else
+            playBtn.String = '▶ Play';
+        end
+    end
+end
+
+
+---
+
+🧩 4. acceptCallback.m and rejectCallback.m
+
+These live as separate files in the same folder (or nested in launchAnimation.m if you prefer).
+
+function acceptCallback(shared,i,j)
+fprintf('Accepted candidate (%d,%d)\n',i,j);
+k = shared.k;
+
+% Zero out entire row and column, then set (i,j)=1
+shared.groups(k).candidates(i,:) = 0;
+shared.groups(k).candidates(:,j) = 0;
+shared.groups(k).candidates(i,j) = 1;
+
+% Close all affected figures
+handles = shared.handles;
+[nI, nJ] = size(handles);
+for ii = 1:nI
+    for jj = 1:nJ
+        if (ii == i || jj == j) && isgraphics(handles(ii,jj))
+            close(handles(ii,jj));
+        end
+    end
+end
+end
+
+function rejectCallback(shared,i,j)
+fprintf('Rejected candidate (%d,%d)\n',i,j);
+k = shared.k;
+shared.groups(k).candidates(i,j) = 0;
+
+handles = shared.handles;
+if isgraphics(handles(i,j))
+    close(handles(i,j));
+end
+end
+
+
+---
+
+✅ Behavior Summary
+
+Action	Effect
+
+groups(k).candidates(i,j)==1	Animation (i,j) opens
+✓ (green)	Sets (i,j)=1, clears row i and column j, closes all those animations
+✗ (red)	Sets (i,j)=0, closes only that animation
+▶ Play / ⏸ Pause	Toggles playback independently for that figure
+Closing all windows	Returns updated groups struct
+
+
+
+---
+
+This version is clean, modular, and easily extensible (e.g., if you want to add keyboard shortcuts, overlays, or color feedback).
+
+Would you like me to add a small colored status indicator (green/red dot or border) so you can visually see which animations were accepted or rejected while reviewing?
