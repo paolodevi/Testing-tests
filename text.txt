@@ -1,217 +1,48 @@
-function fig = launchAnimation(shared, files_ref, files_tgt, fps, i, j)
-% launchAnimation  Displays two animations side-by-side with Play/Pause and feedback buttons.
-%
-% fig = launchAnimation(shared, files_ref, files_tgt, fps, i, j)
-%
-% - shared: struct containing shared.handles and shared.groups(k).candidates
-% - files_ref, files_tgt: file structs for reference and target .mat frames
-% - fps: playback frame rate
-% - i, j: candidate matrix indices (used to update shared state later)
+function format_headers(filename)
+    % FORMAT_HEADERS - Formats lines like "% === text === %" to be
+    % exactly 75 characters long, centering the text between the === markers.
 
-if nargin < 4, fps = 30; end
-
-% ===============================================================
-% Load frames from .mat files
-% ===============================================================
-% --- Reference configuration ---
-for ii = 1:numel(files_ref)
-    if contains(files_ref(ii).name, strrep(num2str(round(shared.groups(k).fr(i), 2)), '.', '_'))
-        load(fullfile(files_ref(ii).folder, files_ref(ii).name), 'frames');
-        frames1 = frames;
-        break;
+    % Read file
+    fid = fopen(filename, 'r');
+    if fid == -1
+        error('Cannot open file: %s', filename);
     end
-end
-
-% --- Target configuration ---
-for ii = 1:numel(files_tgt)
-    if contains(files_tgt(ii).name, strrep(num2str(round(shared.groups(k).ft(j), 2)), '.', '_'))
-        load(fullfile(files_tgt(ii).folder, files_tgt(ii).name), 'frames');
-        frames2 = frames;
-        break;
+    lines = {};
+    tline = fgetl(fid);
+    while ischar(tline)
+        lines{end+1} = tline; %#ok<AGROW>
+        tline = fgetl(fid);
     end
-end
+    fclose(fid);
 
-if ~exist('frames1','var') || ~exist('frames2','var')
-    error('Could not find both reference and target frame files.');
-end
-
-nFrames = min(numel(frames1), numel(frames2));
-dt = 1/fps;
-
-% ===============================================================
-% Figure setup
-% ===============================================================
-scr = get(0, 'ScreenSize');
-figWidth  = 0.8 * scr(3);
-figHeight = 0.8 * scr(4);
-figLeft   = (scr(3) - figWidth) / 2;
-figBottom = (scr(4) - figHeight) / 2;
-
-fig = figure('Position', [figLeft, figBottom, figWidth, figHeight], ...
-    'Color', 'w', ...
-    'Visible', 'on', ...
-    'NumberTitle', 'off', ...
-    'Name', sprintf('Candidate (%d,%d)', i, j));
-
-% ===============================================================
-% Display first frame and store handles
-% ===============================================================
-t = tiledlayout(fig, 2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
-
-nexttile(1);
-h1 = imshow(frames1(1).cdata, 'Border', 'tight');
-title('Reference Configuration');
-
-nexttile(2);
-h2 = imshow(frames2(1).cdata, 'Border', 'tight');
-title('Target Configuration');
-axis image off
-
-% ===============================================================
-% Store relevant handles in appdata (for independent animation)
-% ===============================================================
-setappdata(fig, 'isPlaying', false);
-setappdata(fig, 'kFrame', 1);
-setappdata(fig, 'h1', h1);
-setappdata(fig, 'h2', h2);
-setappdata(fig, 'frames1', frames1);
-setappdata(fig, 'frames2', frames2);
-setappdata(fig, 'nFrames', nFrames);
-setappdata(fig, 'fps', fps);
-setappdata(fig, 'shared', shared);
-setappdata(fig, 'i', i);
-setappdata(fig, 'j', j);
-
-% ===============================================================
-% Buttons
-% ===============================================================
-% --- Play/Pause button ---
-playBtn = uicontrol('Style','pushbutton', ...
-    'String','▶ Play', ...
-    'FontSize',18, ...
-    'Units','normalized', ...
-    'Position',[0.82 0.05 0.15 0.15], ...
-    'Callback',@(~,~) togglePlayAppdata(fig));
-setappdata(fig, 'playBtn', playBtn);
-
-% --- Accept (Green ✓) ---
-uicontrol('Style','pushbutton', ...
-    'String','✓', ...
-    'ForegroundColor','green', ...
-    'FontSize',30, ...
-    'Units','normalized', ...
-    'Position',[0.82 0.60 0.15 0.15], ...
-    'Callback',@(~,~) acceptCallback(fig));
-
-% --- Reject (Red ✗) ---
-uicontrol('Style','pushbutton', ...
-    'String','✗', ...
-    'ForegroundColor','red', ...
-    'FontSize',30, ...
-    'Units','normalized', ...
-    'Position',[0.82 0.30 0.15 0.15], ...
-    'Callback',@(~,~) rejectCallback(fig));
-
-% ===============================================================
-% Timer setup
-% ===============================================================
-timerObj = timer('ExecutionMode','fixedRate', ...
-    'Period', dt, ...
-    'TimerFcn', @(~,~) updateFramesAppdata(fig));
-setappdata(fig, 'timerObj', timerObj);
-start(timerObj);
-
-% Make sure figure closes cleanly
-set(fig, 'CloseRequestFcn', @(src,evt) closeFigureClean(src));
-end
-
-% ===============================================================
-% --- Helper functions below ---
-% ===============================================================
-
-function togglePlayAppdata(fig)
-    if ~isgraphics(fig), return; end
-    cur = getappdata(fig, 'isPlaying');
-    cur = ~logical(cur);
-    setappdata(fig, 'isPlaying', cur);
-    playBtn = getappdata(fig, 'playBtn');
-    if isgraphics(playBtn)
-        if cur
-            set(playBtn, 'String', '⏸ Pause');
-        else
-            set(playBtn, 'String', '▶ Play');
+    % Process lines
+    pattern = '^%\s*===\s*(.*?)\s*===\s*%$';
+    for i = 1:numel(lines)
+        tokens = regexp(lines{i}, pattern, 'tokens');
+        if ~isempty(tokens)
+            text = strtrim(tokens{1}{1});
+            
+            % Build centered header
+            total_len = 75;
+            prefix = '% === ';
+            suffix = ' === %';
+            free_space = total_len - length(prefix) - length(suffix) - length(text);
+            
+            % Split space evenly
+            left_space = floor(free_space / 2);
+            right_space = ceil(free_space / 2);
+            
+            lines{i} = [prefix, repmat(' ', 1, left_space), text, ...
+                        repmat(' ', 1, right_space), suffix];
         end
     end
-end
 
-function updateFramesAppdata(fig)
-    if ~isgraphics(fig), return; end
-    isPlaying = getappdata(fig, 'isPlaying');
-    if ~isPlaying, return; end
-
-    frames1 = getappdata(fig, 'frames1');
-    frames2 = getappdata(fig, 'frames2');
-    h1 = getappdata(fig, 'h1');
-    h2 = getappdata(fig, 'h2');
-    nFrames = getappdata(fig, 'nFrames');
-    kFrame = getappdata(fig, 'kFrame');
-
-    kFrame = mod(kFrame, nFrames) + 1;
-    setappdata(fig, 'kFrame', kFrame);
-
-    if isgraphics(h1)
-        set(h1, 'CData', frames1(kFrame).cdata);
+    % Print or overwrite file
+    fid = fopen(filename, 'w');
+    for i = 1:numel(lines)
+        fprintf(fid, '%s\n', lines{i});
     end
-    if isgraphics(h2)
-        set(h2, 'CData', frames2(kFrame).cdata);
-    end
-    drawnow limitrate nocallbacks;
-end
-
-function closeFigureClean(fig)
-    if isappdata(fig, 'timerObj')
-        t = getappdata(fig, 'timerObj');
-        if ~isempty(t) && isvalid(t)
-            stop(t);
-            delete(t);
-        end
-        rmappdata(fig, 'timerObj');
-    end
-    delete(fig);
-end
-
-function acceptCallback(fig)
-    shared = getappdata(fig, 'shared');
-    i = getappdata(fig, 'i');
-    j = getappdata(fig, 'j');
-    k = shared.k; % assuming you stored 'k' in shared before calling
-
-    % Update candidates
-    shared.groups(k).candidates(i,:) = 0;
-    shared.groups(k).candidates(:,j) = 0;
-    shared.groups(k).candidates(i,j) = 1;
-
-    % Close affected figures
-    handles = shared.handles;
-    [nI, nJ] = size(handles);
-    for ii = 1:nI
-        for jj = 1:nJ
-            if (ii == i || jj == j) && isgraphics(handles(ii,jj))
-                close(handles(ii,jj));
-            end
-        end
-    end
-end
-
-function rejectCallback(fig)
-    shared = getappdata(fig, 'shared');
-    i = getappdata(fig, 'i');
-    j = getappdata(fig, 'j');
-    k = shared.k;
-
-    shared.groups(k).candidates(i,j) = 0;
-    handles = shared.handles;
-    if isgraphics(handles(i,j))
-        close(handles(i,j));
-    end
+    fclose(fid);
+    
+    fprintf('Formatted headers in %s\n', filename);
 end
