@@ -1,7 +1,7 @@
 function format_headers(filename)
     % FORMAT_HEADERS - Formats lines like "% === text === %" to be
-    % exactly 75 characters long, centering the text between the === markers.
-    % Keeps original indentation.
+    % exactly 75 characters long (including indentation).
+    % The text is centered between the === markers, and indentation is preserved.
 
     % Read file
     fid = fopen(filename, 'r');
@@ -24,15 +24,19 @@ function format_headers(filename)
             indent = tokens{1}{1};   % leading spaces
             text = strtrim(tokens{1}{2});
             
-            % Build centered header
             total_len = 75;
+            line_len_available = total_len - length(indent);
+            
             prefix = '% === ';
             suffix = ' === %';
-            free_space = total_len - length(prefix) - length(suffix) - length(text);
+            
+            free_space = line_len_available - length(prefix) - length(suffix) - length(text);
             
             if free_space < 0
-                warning('Header too long on line %d, skipping...', i);
-                continue;
+                % If text too long, truncate it to fit
+                max_text_len = line_len_available - length(prefix) - length(suffix);
+                text = text(1:max_text_len);
+                free_space = 0;
             end
 
             % Split space evenly
@@ -42,10 +46,16 @@ function format_headers(filename)
             % Rebuild line preserving indentation
             lines{i} = [indent, prefix, repmat(' ', 1, left_space), text, ...
                         repmat(' ', 1, right_space), suffix];
+            
+            % Ensure exactly 75 chars including indentation
+            lines{i} = lines{i}(1:min(length(lines{i}), total_len)); 
+            if length(lines{i}) < total_len
+                lines{i} = [lines{i}, repmat(' ', 1, total_len - length(lines{i}))];
+            end
         end
     end
 
-    % Write file back
+    % Write back
     fid = fopen(filename, 'w');
     for i = 1:numel(lines)
         fprintf(fid, '%s\n', lines{i});
