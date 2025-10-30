@@ -1,6 +1,7 @@
 function format_headers(filename)
     % FORMAT_HEADERS - Formats lines like "% === text === %" to be
     % exactly 75 characters long, centering the text between the === markers.
+    % Keeps original indentation.
 
     % Read file
     fid = fopen(filename, 'r');
@@ -16,11 +17,12 @@ function format_headers(filename)
     fclose(fid);
 
     % Process lines
-    pattern = '^%\s*===\s*(.*?)\s*===\s*%$';
+    pattern = '^(\s*)%\s*===\s*(.*?)\s*===\s*%$';
     for i = 1:numel(lines)
         tokens = regexp(lines{i}, pattern, 'tokens');
         if ~isempty(tokens)
-            text = strtrim(tokens{1}{1});
+            indent = tokens{1}{1};   % leading spaces
+            text = strtrim(tokens{1}{2});
             
             % Build centered header
             total_len = 75;
@@ -28,21 +30,27 @@ function format_headers(filename)
             suffix = ' === %';
             free_space = total_len - length(prefix) - length(suffix) - length(text);
             
+            if free_space < 0
+                warning('Header too long on line %d, skipping...', i);
+                continue;
+            end
+
             % Split space evenly
             left_space = floor(free_space / 2);
             right_space = ceil(free_space / 2);
             
-            lines{i} = [prefix, repmat(' ', 1, left_space), text, ...
+            % Rebuild line preserving indentation
+            lines{i} = [indent, prefix, repmat(' ', 1, left_space), text, ...
                         repmat(' ', 1, right_space), suffix];
         end
     end
 
-    % Print or overwrite file
+    % Write file back
     fid = fopen(filename, 'w');
     for i = 1:numel(lines)
         fprintf(fid, '%s\n', lines{i});
     end
     fclose(fid);
-    
+
     fprintf('Formatted headers in %s\n', filename);
 end
