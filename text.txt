@@ -1,159 +1,31 @@
-function finalArray = config_matcher(ref, tgt)
-% CONFIG_MATCHER
-% Creates a UI with 3 top-row plots and a full-width editable 2×n array UI below.
-% Allows adding/removing/modifying columns. Returns final array on Save.
+% Bottom row: use nexttile as parent directly
+uiTile = nexttile(tl, [1 3]);
 
-% ============================================
-% 1. Generate original figures (your code)
-% ============================================
-figs_axes = struct();
-
-[figs_axes(1).fig, figs_axes(1).ax] = plotter_c(ref{1}, tgt{1}, ref{1}.pair.n2n, 6, 0);
-[figs_axes(2).fig, figs_axes(2).ax] = plotter_c(ref{2}, tgt{2}, ref{2}.pair.n2n, 6, 0);
-[figs_axes(3).fig, figs_axes(3).ax] = plotter_c(ref{3}, tgt{3}, ref{3}.pair.n2n, 6, 0);
-
-% ============================================
-% 2. Create main figure as uifigure
-% ============================================
-scr = get(0, 'ScreenSize');
-figWidth  = (2/3) * scr(3);
-figHeight = (2/3) * scr(4);
-figLeft   = (scr(3) - figWidth)  / 2;
-figBottom = (scr(4) - figHeight) / 2;
-
-fig_main = uifigure('Position', [figLeft, figBottom, figWidth, figHeight], ...
-                    'Name', 'Configs Matching', ...
-                    'NumberTitle', 'off');
-
-% ============================================
-% 3. Tiled layout: 2 rows, 3 columns
-% ============================================
-tl = tiledlayout(fig_main, 2, 3, 'TileSpacing', 'compact', 'Padding', 'compact');
-
-% ============================================
-% 4. Top row: 3 plots using uiaxes
-% ============================================
-subplot_axes = gobjects(1,3);
-
-for i = 1:3
-    axTile = nexttile(tl, i);
-    subplot_axes(i) = axTile;
-    hold(axTile, 'on');
-
-    % Copy plot objects from original axes
-    copyobj(get(figs_axes(i).ax, 'Children'), axTile);
-
-    xlim(axTile, [0 20]);
-    title(axTile, sprintf('%s / %s', ref{i}.case.input, ref{i}.case.output));
-end
-
-linkprop(subplot_axes, {'XLim', 'YLim'});
-
-% ============================================
-% 5. Bottom row: full-width UI panel
-% ============================================
-uiTile = nexttile(tl, [1 3]); % span 1 row, 3 columns
-uiPanel = uipanel(fig_main, 'Position', uiTile.Position);
-delete(uiTile);
-
-% ============================================
-% 6. Editable 2×n array UI
-% ============================================
-% Example starting array
-data = [1 2 3; 4 5 6];
-
-% --- UITable ---
-tbl = uitable(uiPanel, ...
-    'Data', data, ...
-    'Units', 'normalized', ...
-    'Position', [0.02 0.30 0.96 0.68], ...
-    'ColumnEditable', true, ...
-    'RowName', ["Row 1", "Row 2"]);
-
-% --- Column selector dropdown ---
-dd = uidropdown(uiPanel, ...
+% Now add UI controls with parent = uiTile
+dd = uidropdown(uiTile, ...
     'Units', 'normalized', ...
     'Position', [0.02 0.10 0.15 0.12], ...
     'Items', string(1:size(data,2)), ...
     'Value', "1");
 
-% --- Add column button ---
-btnAdd = uibutton(uiPanel, 'Text', 'Add', ...
+btnAdd = uibutton(uiTile, 'Text', 'Add', ...
     'Units', 'normalized', ...
     'Position', [0.20 0.10 0.15 0.12], ...
     'ButtonPushedFcn', @(~,~) addColumn());
 
-% --- Remove column button ---
-btnRemove = uibutton(uiPanel, 'Text', 'Remove', ...
+btnRemove = uibutton(uiTile, 'Text', 'Remove', ...
     'Units', 'normalized', ...
     'Position', [0.38 0.10 0.15 0.12], ...
     'ButtonPushedFcn', @(~,~) removeColumn());
 
-% --- Save button ---
-btnSave = uibutton(uiPanel, 'Text', 'Save', ...
+btnSave = uibutton(uiTile, 'Text', 'Save', ...
     'Units', 'normalized', ...
     'Position', [0.56 0.10 0.15 0.12], ...
     'ButtonPushedFcn', @(~,~) saveAndClose());
 
-% ============================================
-% 7. Wait until user presses Save
-% ============================================
-uiwait(fig_main);
-
-% ============================================
-% 8. Return array to main script
-% ============================================
-if isvalid(fig_main)
-    finalArray = tbl.Data;
-    delete(fig_main);
-else
-    finalArray = data; % fallback
-end
-
-% ============================================
-% Nested helper functions
-% ============================================
-
-    function updateDropdown()
-        n = size(tbl.Data,2);
-        if n == 0
-            dd.Items = {};
-            dd.Value = "";
-        else
-            dd.Items = string(1:n);
-            if str2double(dd.Value) > n
-                dd.Value = string(n);
-            end
-        end
-    end
-
-    function addColumn()
-        idx = str2double(dd.Value);
-        D = tbl.Data;
-        n = size(D,2);
-
-        newD = zeros(2,n+1);
-        newD(:,1:idx-1) = D(:,1:idx-1);
-        newD(:,idx) = [0;0];
-        newD(:,idx+1:end) = D(:,idx:end);
-
-        tbl.Data = newD;
-        updateDropdown();
-    end
-
-    function removeColumn()
-        if isempty(dd.Items)
-            return;
-        end
-        idx = str2double(dd.Value);
-        D = tbl.Data;
-        D(:,idx) = [];
-        tbl.Data = D;
-        updateDropdown();
-    end
-
-    function saveAndClose()
-        uiresume(fig_main); % resume execution → function returns finalArray
-    end
-
-end
+tbl = uitable(uiTile, ...
+    'Data', data, ...
+    'Units', 'normalized', ...
+    'Position', [0.02 0.30 0.96 0.68], ...
+    'ColumnEditable', true, ...
+    'RowName', ["Row 1", "Row 2"]);
