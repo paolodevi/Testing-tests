@@ -1,66 +1,52 @@
-function format_headers(filename)
-    % FORMAT_HEADERS - Formats lines like "% === text === %" to be
-    % exactly 75 characters long (including indentation).
-    % The text is centered between the === markers, and indentation is preserved.
+function arrayEditorUI(initialData)
 
-    % Read file
-    fid = fopen(filename, 'r');
-    if fid == -1
-        error('Cannot open file: %s', filename);
+    if nargin < 1
+        initialData = rand(2,3);   % default 2×3 array
     end
-    lines = {};
-    tline = fgetl(fid);
-    while ischar(tline)
-        lines{end+1} = tline; %#ok<AGROW>
-        tline = fgetl(fid);
+
+    fig = uifigure('Name','2×n Array Editor','Position',[100 100 500 300]);
+
+    % Create table
+    tbl = uitable(fig,...
+        'Data', initialData,...
+        'Position',[20 60 460 200],...
+        'ColumnEditable', true,...
+        'RowName', ["Row 1","Row 2"]);
+
+    % Add column button
+    btnAdd = uibutton(fig,'Text','Add Column',...
+        'Position',[20 20 100 30],...
+        'ButtonPushedFcn', @(src,event) addColumn());
+
+    % Remove column button
+    btnRemove = uibutton(fig,'Text','Remove Column',...
+        'Position',[140 20 100 30],...
+        'ButtonPushedFcn', @(src,event) removeColumn());
+
+    % Get array button
+    btnGet = uibutton(fig,'Text','Show Array in Command Window',...
+        'Position',[260 20 200 30],...
+        'ButtonPushedFcn', @(src,event) showArray());
+
+    % ------- Nested functions -------
+
+    function addColumn()
+        data = tbl.Data;
+        data(:,end+1) = [0; 0];   % add a default column
+        tbl.Data = data;
     end
-    fclose(fid);
 
-    % Process lines
-    pattern = '^(\s*)%\s*===\s*(.*?)\s*===\s*%$';
-    for i = 1:numel(lines)
-        tokens = regexp(lines{i}, pattern, 'tokens');
-        if ~isempty(tokens)
-            indent = tokens{1}{1};   % leading spaces
-            text = strtrim(tokens{1}{2});
-            
-            total_len = 75;
-            line_len_available = total_len - length(indent);
-            
-            prefix = '% === ';
-            suffix = ' === %';
-            
-            free_space = line_len_available - length(prefix) - length(suffix) - length(text);
-            
-            if free_space < 0
-                % If text too long, truncate it to fit
-                max_text_len = line_len_available - length(prefix) - length(suffix);
-                text = text(1:max_text_len);
-                free_space = 0;
-            end
-
-            % Split space evenly
-            left_space = floor(free_space / 2);
-            right_space = ceil(free_space / 2);
-            
-            % Rebuild line preserving indentation
-            lines{i} = [indent, prefix, repmat(' ', 1, left_space), text, ...
-                        repmat(' ', 1, right_space), suffix];
-            
-            % Ensure exactly 75 chars including indentation
-            lines{i} = lines{i}(1:min(length(lines{i}), total_len)); 
-            if length(lines{i}) < total_len
-                lines{i} = [lines{i}, repmat(' ', 1, total_len - length(lines{i}))];
-            end
+    function removeColumn()
+        data = tbl.Data;
+        if size(data,2) > 0
+            data(:,end) = [];    % remove last column
+            tbl.Data = data;
         end
     end
 
-    % Write back
-    fid = fopen(filename, 'w');
-    for i = 1:numel(lines)
-        fprintf(fid, '%s\n', lines{i});
+    function showArray()
+        disp('Current array:')
+        disp(tbl.Data)
     end
-    fclose(fid);
 
-    fprintf('Formatted headers in %s\n', filename);
 end
