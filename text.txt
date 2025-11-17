@@ -1,75 +1,76 @@
-function arrayEditorUI(initialData)
+function finalArray = arrayEditorUI(initialData)
 
     if nargin < 1
-        initialData = rand(2,3);   % default 2×3 array
+        initialData = rand(2,3);
     end
 
     fig = uifigure('Name','2×n Array Editor','Position',[100 100 550 300]);
 
-    % ----------------------------------------------------------
-    % Table
-    % ----------------------------------------------------------
     tbl = uitable(fig,...
         'Data', initialData,...
         'Position',[20 60 510 200],...
         'ColumnEditable', true,...
-        'RowName', ["Row 1","Row 2"]);
+        'RowName', ["Row 1", "Row 2"]);
 
-    % Dropdown listing column numbers
     dd = uidropdown(fig,...
         'Position',[20 20 100 30],...
         'Items', string(1:size(initialData,2)),...
         'Value', "1");
 
-    % ----------------------------------------------------------
-    % Add column button
-    % ----------------------------------------------------------
     btnAdd = uibutton(fig,'Text','Add Column',...
         'Position',[140 20 100 30],...
-        'ButtonPushedFcn', @(src,event) addColumn());
+        'ButtonPushedFcn', @(~,~) addColumn());
 
-    % ----------------------------------------------------------
-    % Remove column button
-    % ----------------------------------------------------------
     btnRemove = uibutton(fig,'Text','Remove Column',...
         'Position',[260 20 100 30],...
-        'ButtonPushedFcn', @(src,event) removeColumn());
+        'ButtonPushedFcn', @(~,~) removeColumn());
 
-    % ----------------------------------------------------------
-    % Update dropdown initially
+    % *** SAVE button ***
+    btnSave = uibutton(fig,'Text','Save',...
+        'Position',[380 20 100 30],...
+        'ButtonPushedFcn', @(~,~) saveAndClose());
+
     updateDropdown();
 
-    % ----------------------------------------------------------
-    % Nested functions
-    % ----------------------------------------------------------
+    % Block execution until user presses Save
+    uiwait(fig);
+
+    % After resume, user pressed Save → return final array
+    if isvalid(fig)
+        finalArray = tbl.Data;
+        delete(fig);
+    else
+        finalArray = initialData;  % if figure closed without saving
+    end
+
+    % ---------------------------------------------------------
+    % Nested helper functions
+    % ---------------------------------------------------------
 
     function updateDropdown()
         n = size(tbl.Data,2);
         if n == 0
             dd.Items = {};
-            dd.Value = '';
-        else
-            dd.Items = string(1:n);
-            if str2double(dd.Value) > n
-                dd.Value = string(n);
-            end
+            dd.Value = "";
+            return;
+        end
+        dd.Items = string(1:n);
+        if str2double(dd.Value) > n
+            dd.Value = string(n);
         end
     end
 
     function addColumn()
-        idx = str2double(dd.Value);  % insert BEFORE this column
-
+        idx = str2double(dd.Value);
         data = tbl.Data;
         n = size(data,2);
 
-        % Construct new array with inserted column
-        newData = zeros(2, n+1);
-        newData(:, 1:idx-1) = data(:, 1:idx-1);
-        newData(:, idx) = [0; 0];   % new blank column
-        newData(:, idx+1:end) = data(:, idx:end);
+        newData = zeros(2,n+1);
+        newData(:,1:idx-1) = data(:,1:idx-1);
+        newData(:,idx) = [0;0];
+        newData(:,idx+1:end) = data(:,idx:end);
 
         tbl.Data = newData;
-
         updateDropdown();
     end
 
@@ -77,13 +78,15 @@ function arrayEditorUI(initialData)
         if isempty(dd.Items)
             return;
         end
-
         idx = str2double(dd.Value);
         data = tbl.Data;
-        data(:, idx) = [];   % remove selected column
+        data(:,idx) = [];
         tbl.Data = data;
-
         updateDropdown();
+    end
+
+    function saveAndClose()
+        uiresume(fig);   % resume execution → function returns data
     end
 
 end
