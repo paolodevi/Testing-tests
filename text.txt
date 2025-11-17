@@ -4,49 +4,86 @@ function arrayEditorUI(initialData)
         initialData = rand(2,3);   % default 2×3 array
     end
 
-    fig = uifigure('Name','2×n Array Editor','Position',[100 100 500 300]);
+    fig = uifigure('Name','2×n Array Editor','Position',[100 100 550 300]);
 
-    % Create table
+    % ----------------------------------------------------------
+    % Table
+    % ----------------------------------------------------------
     tbl = uitable(fig,...
         'Data', initialData,...
-        'Position',[20 60 460 200],...
+        'Position',[20 60 510 200],...
         'ColumnEditable', true,...
         'RowName', ["Row 1","Row 2"]);
 
-    % Add column button
-    btnAdd = uibutton(fig,'Text','Add Column',...
+    % Dropdown listing column numbers
+    dd = uidropdown(fig,...
         'Position',[20 20 100 30],...
+        'Items', string(1:size(initialData,2)),...
+        'Value', "1");
+
+    % ----------------------------------------------------------
+    % Add column button
+    % ----------------------------------------------------------
+    btnAdd = uibutton(fig,'Text','Add Column',...
+        'Position',[140 20 100 30],...
         'ButtonPushedFcn', @(src,event) addColumn());
 
+    % ----------------------------------------------------------
     % Remove column button
+    % ----------------------------------------------------------
     btnRemove = uibutton(fig,'Text','Remove Column',...
-        'Position',[140 20 100 30],...
+        'Position',[260 20 100 30],...
         'ButtonPushedFcn', @(src,event) removeColumn());
 
-    % Get array button
-    btnGet = uibutton(fig,'Text','Show Array in Command Window',...
-        'Position',[260 20 200 30],...
-        'ButtonPushedFcn', @(src,event) showArray());
+    % ----------------------------------------------------------
+    % Update dropdown initially
+    updateDropdown();
 
-    % ------- Nested functions -------
+    % ----------------------------------------------------------
+    % Nested functions
+    % ----------------------------------------------------------
 
-    function addColumn()
-        data = tbl.Data;
-        data(:,end+1) = [0; 0];   % add a default column
-        tbl.Data = data;
-    end
-
-    function removeColumn()
-        data = tbl.Data;
-        if size(data,2) > 0
-            data(:,end) = [];    % remove last column
-            tbl.Data = data;
+    function updateDropdown()
+        n = size(tbl.Data,2);
+        if n == 0
+            dd.Items = {};
+            dd.Value = '';
+        else
+            dd.Items = string(1:n);
+            if str2double(dd.Value) > n
+                dd.Value = string(n);
+            end
         end
     end
 
-    function showArray()
-        disp('Current array:')
-        disp(tbl.Data)
+    function addColumn()
+        idx = str2double(dd.Value);  % insert BEFORE this column
+
+        data = tbl.Data;
+        n = size(data,2);
+
+        % Construct new array with inserted column
+        newData = zeros(2, n+1);
+        newData(:, 1:idx-1) = data(:, 1:idx-1);
+        newData(:, idx) = [0; 0];   % new blank column
+        newData(:, idx+1:end) = data(:, idx:end);
+
+        tbl.Data = newData;
+
+        updateDropdown();
+    end
+
+    function removeColumn()
+        if isempty(dd.Items)
+            return;
+        end
+
+        idx = str2double(dd.Value);
+        data = tbl.Data;
+        data(:, idx) = [];   % remove selected column
+        tbl.Data = data;
+
+        updateDropdown();
     end
 
 end
