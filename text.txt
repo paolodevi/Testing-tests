@@ -1,76 +1,150 @@
-function finalArray = arrayEditorUI(initialData)
+function finalArray = config_matcher(ref, tgt)
+% --------------------------------------------------------------
+% Creates 3 subplots on top row and a full-width UI underneath.
+% UI allows editing a 2×n array (add/remove/modify columns).
+% On Save, returns the final modified array to caller.
+% --------------------------------------------------------------
 
-    if nargin < 1
-        initialData = rand(2,3);
-    end
+% ============================================
+% 1. Generate original figures (your code)
+% ============================================
+figs_axes = struct();
 
-    fig = uifigure('Name','2×n Array Editor','Position',[100 100 550 300]);
+[figs_axes(1).fig, figs_axes(1).ax] = plotter_c(ref{1}, tgt{1}, ref{1}.pair.n2n, 6, 0);
+[figs_axes(2).fig, figs_axes(2).ax] = plotter_c(ref{2}, tgt{2}, ref{2}.pair.n2n, 6, 0);
+[figs_axes(3).fig, figs_axes(3).ax] = plotter_c(ref{3}, tgt{3}, ref{3}.pair.n2n, 6, 0);
 
-    tbl = uitable(fig,...
-        'Data', initialData,...
-        'Position',[20 60 510 200],...
-        'ColumnEditable', true,...
-        'RowName', ["Row 1", "Row 2"]);
+% ============================================
+% 2. Create main figure with tiledlayout
+% ============================================
+scr = get(0, 'ScreenSize');
+figWidth  = (2/3) * scr(3);
+figHeight = (2/3) * scr(4);
 
-    dd = uidropdown(fig,...
-        'Position',[20 20 100 30],...
-        'Items', string(1:size(initialData,2)),...
-        'Value', "1");
+figLeft   = (scr(3) - figWidth)  / 2;
+figBottom = (scr(4) - figHeight) / 2;
 
-    btnAdd = uibutton(fig,'Text','Add Column',...
-        'Position',[140 20 100 30],...
-        'ButtonPushedFcn', @(~,~) addColumn());
+fig_main = figure('Position', [figLeft, figBottom, figWidth, figHeight], ...
+                  'Name', 'Configs Matching', ...
+                  'NumberTitle', 'off', ...
+                  'Visible', 'on');
 
-    btnRemove = uibutton(fig,'Text','Remove Column',...
-        'Position',[260 20 100 30],...
-        'ButtonPushedFcn', @(~,~) removeColumn());
+tl = tiledlayout(fig_main, 2, 3, "TileSpacing", "compact", "Padding", "compact");
 
-    % *** SAVE button ***
-    btnSave = uibutton(fig,'Text','Save',...
-        'Position',[380 20 100 30],...
-        'ButtonPushedFcn', @(~,~) saveAndClose());
+% ============================================
+% 3. Top row: 3 plots
+% ============================================
+subplot_axes = gobjects(1,3);
 
-    updateDropdown();
+for i = 1:3
+    nexttile(tl, i);
+    subplot_axes(i) = gca;
+    hold on;
 
-    % Block execution until user presses Save
-    uiwait(fig);
+    ax = figs_axes(i).ax;
+    copyobj(get(ax, 'Children'), subplot_axes(i));
 
-    % After resume, user pressed Save → return final array
-    if isvalid(fig)
-        finalArray = tbl.Data;
-        delete(fig);
-    else
-        finalArray = initialData;  % if figure closed without saving
-    end
+    xlim(subplot_axes(i), [0 20]);
+    title(subplot_axes(i), sprintf('%s / %s', ...
+        ref{i}.case.input, ref{i}.case.output));
+end
 
-    % ---------------------------------------------------------
-    % Nested helper functions
-    % ---------------------------------------------------------
+linkprop(subplot_axes, {'XLim', 'YLim'});
+
+% ============================================
+% 4. Bottom row: UI AREA
+% ============================================
+uiTile = nexttile(tl, [1 3]); % span 3 columns
+uiPanel = uipanel('Parent', fig_main, ...
+    'Units', 'normalized', ...
+    'Position', uiTile.Position);
+delete(uiTile);
+
+% ============================================
+% 5. Create the editable array (default 2×3)
+% ============================================
+data = [1 2 3; 4 5 6];   % <-- replace with your own initial array
+
+% ============================================
+% 6. Build UI
+% ============================================
+
+% Table
+tbl = uitable(uiPanel, ...
+    'Data', data, ...
+    'Units', 'normalized', ...
+    'Position', [0.02 0.30 0.96 0.68], ...
+    'ColumnEditable', true, ...
+    'RowName', ["Row 1", "Row 2"]);
+
+% Dropdown for selecting column
+dd = uidropdown(uiPanel, ...
+    'Units', 'normalized', ...
+    'Position', [0.02 0.10 0.15 0.12], ...
+    'Items', string(1:size(data,2)), ...
+    'Value', "1");
+
+% --- Add column button ---
+btnAdd = uibutton(uiPanel, "Text", "Add", ...
+    'Units', 'normalized', ...
+    'Position', [0.20 0.10 0.15 0.12], ...
+    'ButtonPushedFcn', @(~,~) addColumn());
+
+% --- Remove column button ---
+btnRemove = uibutton(uiPanel, "Text", "Remove", ...
+    'Units', 'normalized', ...
+    'Position', [0.38 0.10 0.15 0.12], ...
+    'ButtonPushedFcn', @(~,~) removeColumn());
+
+% --- SAVE button (returns array to caller) ---
+btnSave = uibutton(uiPanel, "Text", "Save", ...
+    'Units', 'normalized', ...
+    'Position', [0.56 0.10 0.15 0.12], ...
+    'ButtonPushedFcn', @(~,~) saveAndClose());
+
+% ============================================
+% 7. Pause execution until Save is pressed
+% ============================================
+uiwait(fig_main);
+
+% ============================================
+% 8. Return value to main script
+% ============================================
+if isvalid(fig_main)
+    finalArray = tbl.Data;
+    delete(fig_main);
+else
+    finalArray = data;  % fallback
+end
+
+% ----------------------------------------------------------
+% === Nested functions (have access to tbl, dd, uiPanel) ===
+% ----------------------------------------------------------
 
     function updateDropdown()
         n = size(tbl.Data,2);
         if n == 0
             dd.Items = {};
             dd.Value = "";
-            return;
-        end
-        dd.Items = string(1:n);
-        if str2double(dd.Value) > n
-            dd.Value = string(n);
+        else
+            dd.Items = string(1:n);
+            if str2double(dd.Value) > n
+                dd.Value = string(n);
+            end
         end
     end
 
     function addColumn()
         idx = str2double(dd.Value);
-        data = tbl.Data;
-        n = size(data,2);
+        D = tbl.Data;
+        n = size(D,2);
 
-        newData = zeros(2,n+1);
-        newData(:,1:idx-1) = data(:,1:idx-1);
-        newData(:,idx) = [0;0];
-        newData(:,idx+1:end) = data(:,idx:end);
+        newD = zeros(2, n+1);
+        newD(:,1:idx-1) = D(:,1:idx-1);
+        newD(:,idx) = [0;0];
+        newD(:,idx+1:end) = D(:,idx:end);
 
-        tbl.Data = newData;
+        tbl.Data = newD;
         updateDropdown();
     end
 
@@ -79,14 +153,14 @@ function finalArray = arrayEditorUI(initialData)
             return;
         end
         idx = str2double(dd.Value);
-        data = tbl.Data;
-        data(:,idx) = [];
-        tbl.Data = data;
+        D = tbl.Data;
+        D(:,idx) = [];
+        tbl.Data = D;
         updateDropdown();
     end
 
     function saveAndClose()
-        uiresume(fig);   % resume execution → function returns data
+        uiresume(fig_main); % resume → function returns
     end
 
 end
