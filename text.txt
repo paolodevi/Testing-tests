@@ -1,11 +1,11 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% MAIN SCRIPT — NO tiledlayout, NO subplot, fully compatible with UI
+% FINAL WORKING VERSION — figure + axes + uipanel + uicontrol only
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 clear; clc; close all;
 
 % ------------------------------------------------------------------------
-% Example data (remove if real ref/tgt exist)
+% Dummy data (remove for real data)
 % ------------------------------------------------------------------------
 ref = {
     struct('pair', struct('n2n', 1), 'case', struct('input','A','output','X'))
@@ -14,58 +14,31 @@ ref = {
 };
 tgt = ref;
 
-% Dummy plot generator
 plotter_c = @(a,b,c,d,e) deal(figure('Visible','off'), axes('Visible','off'));
 
-% Generate hidden axes containing data
 figs_axes = struct();
 for i = 1:3
     [figs_axes(i).fig, figs_axes(i).ax] = plotter_c(ref{i}, tgt{i}, ref{i}.pair.n2n, 6, 0);
 end
 
-
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% MAIN FIGURE AND MANUAL LAYOUT
+% MAIN FIGURE + MANUAL LAYOUT
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-scr = get(0, 'ScreenSize');
-W = (2/3) * scr(3);
-H = (2/3) * scr(4);
-L = (scr(3) - W) / 2;
-B = (scr(4) - H) / 2;
+fig = figure('Name','Configs Matching','NumberTitle','off');
 
-fig_main = figure('Position',[L B W H], ...
-    'Name','Configs Matching',...
-    'NumberTitle','off',...
-    'Visible','on');
-
-% ------------------------------------------------------------------------
-% Define manual layout rectangles (normalized)
-% ------------------------------------------------------------------------
-hTop = 0.65;      % top portion for plots
-hBottom = 0.30;   % bottom portion for UI
-
-wPlot = 1/3;      % width per plot
-
-% Axes positions in normalized units
+% Axes positions (top row)
 axPos = {
-    [0*wPlot, 1-hTop, wPlot, hTop], ...
-    [1*wPlot, 1-hTop, wPlot, hTop], ...
-    [2*wPlot, 1-hTop, wPlot, hTop]
+    [0.00 0.35 0.33 0.60], ...
+    [0.33 0.35 0.33 0.60], ...
+    [0.66 0.35 0.33 0.60]
 };
 
-% ------------------------------------------------------------------------
-% Create 3 axes manually
-% ------------------------------------------------------------------------
 subplot_axes = gobjects(1,3);
 
 for i = 1:3
-    subplot_axes(i) = axes('Parent',fig_main, 'Position', axPos{i});
-    hold(subplot_axes(i),'on');
-
-    % Copy graphics
+    subplot_axes(i) = axes('Parent',fig, 'Position', axPos{i});
     copyobj(get(figs_axes(i).ax,'Children'), subplot_axes(i));
-
     xlim(subplot_axes(i), [0 20]);
     title(subplot_axes(i), sprintf("%s / %s", ...
         ref{i}.case.input, ref{i}.case.output));
@@ -73,104 +46,91 @@ end
 
 linkprop(subplot_axes, {'XLim','YLim'});
 
-
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% UI PANEL — FULL WIDTH BOTTOM ROW
+% UI PANEL (BOTTOM ROW)
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-panelUI = uipanel('Parent',fig_main,...
-    'Units','normalized',...
-    'Position',[0 0 wPlot*3 hBottom],...
-    'BorderType','none');
+panel = uipanel('Parent',fig,'Units','normalized',...
+    'Position',[0 0 1 0.33], 'Title','Array Editor');
 
+% ------------------- TABLE DISPLAY (simple textual version) --------------
 initialData = rand(2,3);
+data = initialData;
 
-arrayEditorUI(panelUI, initialData);
+txt = uicontrol('Parent',panel,'Style','text',...
+    'Units','normalized','Position',[0.05 0.55 0.9 0.40],...
+    'FontSize',12,'HorizontalAlignment','left');
 
-disp('Use getappdata(panelUI,"EditedArray") to retrieve the saved array.');
+updateTableDisplay();
+
+% ------------------- DROPDOWN (popupmenu) -------------------------------
+uicontrol('Parent',panel,'Style','text','String','Column:',...
+    'Units','normalized','Position',[0.05 0.40 0.15 0.08]);
+
+colPopup = uicontrol('Parent',panel,'Style','popupmenu',...
+    'Units','normalized','Position',[0.20 0.40 0.15 0.10],...
+    'String', makeColumnList());
+
+% ------------------- Add Column -----------------------------------------
+uicontrol('Parent',panel,'Style','pushbutton','String','Add Column',...
+    'Units','normalized','Position',[0.40 0.40 0.15 0.10],...
+    'Callback',@addColumn);
+
+% ------------------- Remove Column --------------------------------------
+uicontrol('Parent',panel,'Style','pushbutton','String','Remove Column',...
+    'Units','normalized','Position',[0.60 0.40 0.15 0.10],...
+    'Callback',@removeColumn);
+
+% ------------------- Save Button ----------------------------------------
+uicontrol('Parent',panel,'Style','pushbutton','String','Save',...
+    'Units','normalized','Position',[0.80 0.40 0.15 0.10],...
+    'Callback',@saveData);
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% EMBEDDED UI FUNCTION
+% FUNCTIONS
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-function arrayEditorUI(parentPanel, initialData)
-
-    % Store initial
-    setappdata(parentPanel,'EditedArray', initialData);
-
-    gl = uigridlayout(parentPanel, [3 4]);
-    gl.RowHeight = {200, 40, '1x'};
-    gl.ColumnWidth = {'1x','1x','1x','1x'};
-
-    tbl = uitable(gl, ...
-        'Data', initialData, ...
-        'ColumnEditable', true, ...
-        'RowName', ["Row 1", "Row 2"]);
-    tbl.Layout.Row = 1;
-    tbl.Layout.Column = [1 4];
-
-    dd = uidropdown(gl, ...
-        'Items', string(1:size(initialData,2)), ...
-        'Value', "1");
-    dd.Layout.Row = 2;
-    dd.Layout.Column = 1;
-
-    btnAdd = uibutton(gl,'Text','Add Column', ...
-        'ButtonPushedFcn', @(~,~) addColumn());
-    btnAdd.Layout.Row = 2;
-    btnAdd.Layout.Column = 2;
-
-    btnRemove = uibutton(gl,'Text','Remove Column', ...
-        'ButtonPushedFcn', @(~,~) removeColumn());
-    btnRemove.Layout.Row = 2;
-    btnRemove.Layout.Column = 3;
-
-    btnSave = uibutton(gl,'Text','Save', ...
-        'ButtonPushedFcn', @(~,~) saveData());
-    btnSave.Layout.Row = 2;
-    btnSave.Layout.Column = 4;
-
-    % -----------------------------------------------    
-    function updateDropdown()
-        n = size(tbl.Data,2);
-        dd.Items = string(1:n);
-        if str2double(dd.Value) > n
-            dd.Value = string(n);
-        end
+    function s = makeColumnList()
+        n = size(data,2);
+        s = arrayfun(@(x) sprintf("Column %d",x), 1:n, 'UniformOutput', false);
     end
 
-    function addColumn()
-        idx = str2double(dd.Value);
-        data = tbl.Data;
-        n = size(data,2);
+    function updateTableDisplay()
+        str = sprintf("  Col1     Col2     Col3\n");
+        for r = 1:size(data,1)
+            for c = 1:size(data,2)
+                str = sprintf("%s  %0.3f  ", str, data(r,c));
+            end
+            str = sprintf("%s\n", str);
+        end
+        txt.String = str;
+    end
 
+    function addColumn(~,~)
+        idx = colPopup.Value;
+        n = size(data,2);
         newData = zeros(2,n+1);
         newData(:,1:idx-1) = data(:,1:idx-1);
-        newData(:,idx)   = [0;0];
+        newData(:,idx) = [0;0];
         newData(:,idx+1:end) = data(:,idx:end);
-
-        tbl.Data = newData;
-        updateDropdown();
+        data = newData;
+        colPopup.String = makeColumnList();
+        updateTableDisplay();
     end
 
-    function removeColumn()
-        idx = str2double(dd.Value);
-        data = tbl.Data;
-
-        if isempty(data)
-            return;
+    function removeColumn(~,~)
+        idx = colPopup.Value;
+        if size(data,2) > 1
+            data(:,idx) = [];
+            colPopup.String = makeColumnList();
+            colPopup.Value = min(idx, size(data,2));
+            updateTableDisplay();
         end
-
-        data(:,idx) = [];
-
-        tbl.Data = data;
-        updateDropdown();
     end
 
-    function saveData()
-        setappdata(parentPanel,'EditedArray', tbl.Data);
-        disp("Saved array:");
-        disp(tbl.Data);
+    function saveData(~,~)
+        assignin('base','EditedArray',data);
+        disp('Saved to workspace variable "EditedArray":');
+        disp(data);
     end
-end
