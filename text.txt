@@ -1,11 +1,13 @@
+function mainScript
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% FINAL WORKING VERSION — figure + axes + uipanel + uicontrol only
+% FINAL WORKING VERSION — all code inside one function
+% Nested functions now share "data" correctly
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 clear; clc; close all;
 
 % ------------------------------------------------------------------------
-% Dummy data (remove for real data)
+% Dummy data (replace with real)
 % ------------------------------------------------------------------------
 ref = {
     struct('pair', struct('n2n', 1), 'case', struct('input','A','output','X'))
@@ -27,7 +29,6 @@ end
 
 fig = figure('Name','Configs Matching','NumberTitle','off');
 
-% Axes positions (top row)
 axPos = {
     [0.00 0.35 0.33 0.60], ...
     [0.33 0.35 0.33 0.60], ...
@@ -53,17 +54,17 @@ linkprop(subplot_axes, {'XLim','YLim'});
 panel = uipanel('Parent',fig,'Units','normalized',...
     'Position',[0 0 1 0.33], 'Title','Array Editor');
 
-% ------------------- TABLE DISPLAY (simple textual version) --------------
-initialData = rand(2,3);
-data = initialData;
+% ------------------- SHARED VARIABLE (now visible to nested functions) ----
+data = rand(2,3);
 
+% Text showing array content
 txt = uicontrol('Parent',panel,'Style','text',...
     'Units','normalized','Position',[0.05 0.55 0.9 0.40],...
     'FontSize',12,'HorizontalAlignment','left');
 
 updateTableDisplay();
 
-% ------------------- DROPDOWN (popupmenu) -------------------------------
+% Column dropdown
 uicontrol('Parent',panel,'Style','text','String','Column:',...
     'Units','normalized','Position',[0.05 0.40 0.15 0.08]);
 
@@ -71,40 +72,37 @@ colPopup = uicontrol('Parent',panel,'Style','popupmenu',...
     'Units','normalized','Position',[0.20 0.40 0.15 0.10],...
     'String', makeColumnList());
 
-% ------------------- Add Column -----------------------------------------
+% Add / Remove / Save buttons
 uicontrol('Parent',panel,'Style','pushbutton','String','Add Column',...
     'Units','normalized','Position',[0.40 0.40 0.15 0.10],...
     'Callback',@addColumn);
 
-% ------------------- Remove Column --------------------------------------
 uicontrol('Parent',panel,'Style','pushbutton','String','Remove Column',...
     'Units','normalized','Position',[0.60 0.40 0.15 0.10],...
     'Callback',@removeColumn);
 
-% ------------------- Save Button ----------------------------------------
 uicontrol('Parent',panel,'Style','pushbutton','String','Save',...
     'Units','normalized','Position',[0.80 0.40 0.15 0.10],...
     'Callback',@saveData);
 
-
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% FUNCTIONS
+% Nested Functions — automatically share "data"
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-    function s = makeColumnList()
-        n = size(data,2);
-        s = arrayfun(@(x) sprintf("Column %d",x), 1:n, 'UniformOutput', false);
-    end
 
     function updateTableDisplay()
-        str = sprintf("  Col1     Col2     Col3\n");
+        str = "";
         for r = 1:size(data,1)
             for c = 1:size(data,2)
-                str = sprintf("%s  %0.3f  ", str, data(r,c));
+                str = sprintf("%s %7.3f", str, data(r,c));
             end
             str = sprintf("%s\n", str);
         end
         txt.String = str;
+    end
+
+    function s = makeColumnList()
+        n = size(data,2);
+        s = arrayfun(@(x) sprintf("Column %d",x), 1:n, 'UniformOutput', false);
     end
 
     function addColumn(~,~)
@@ -134,3 +132,5 @@ uicontrol('Parent',panel,'Style','pushbutton','String','Save',...
         disp('Saved to workspace variable "EditedArray":');
         disp(data);
     end
+
+end
