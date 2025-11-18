@@ -1,170 +1,20 @@
-%% --------------------------------------------------------------
-%  Main Script
-%% --------------------------------------------------------------
-
-% Example data (remove if you already define ref, tgt)
-ref = {
-    struct('pair', struct('n2n', 1), 'case', struct('input','A','output','X'))
-    struct('pair', struct('n2n', 1), 'case', struct('input','B','output','Y'))
-    struct('pair', struct('n2n', 1), 'case', struct('input','C','output','Z'))
-};
-tgt = ref;
-
-% Placeholder plotter_c — replace with your function
-plotter_c = @(a,b,c,d,e) deal(figure, axes);
-
-% Generate original figures (not visible)
-figs_axes = struct();
-for i = 1:3
-    [figs_axes(i).fig, figs_axes(i).ax] = plotter_c(ref{i}, tgt{i}, ref{i}.pair.n2n, 6, 0);
-end
-
-%% --------------------------------------------------------------
-%  Create Main Figure + 2-row Layout
-%% --------------------------------------------------------------
-
-scr = get(0, 'ScreenSize');
-figWidth  = (2/3) * scr(3);
-figHeight = (2/3) * scr(4);
-figLeft   = (scr(3) - figWidth)  / 2;
-figBottom = (scr(4) - figHeight) / 2;
-
-fig_main = figure('Position', [figLeft, figBottom, figWidth, figHeight], ...
-    'Name', 'Configs Matching', ...
-    'NumberTitle', 'on', ...
-    'Visible', 'on');
-
-% 2 rows (top with 3 tiles, bottom spanning all)
+% Create layout
 tl = tiledlayout(fig_main, 2, 3, "TileSpacing", "compact", "Padding", "compact");
 
-%% --------------------------------------------------------------
-%  First row: Copy plots into 3 subplots
-%% --------------------------------------------------------------
-
-subplot_axes = gobjects(1,3);
-
+% First row tiles (1,2,3)
 for i = 1:3
-    nexttile(tl, i);
-    subplot_axes(i) = gca;
-    hold(subplot_axes(i), 'on');
+    ax_tile = nexttile(tl, i);
+    subplot_axes(i) = ax_tile;
+    hold(ax_tile, 'on');
+    copyobj(get(figs_axes(i).ax, 'Children'), ax_tile);
 
-    % Copy children
-    copyobj(get(figs_axes(i).ax, 'Children'), subplot_axes(i));
-
-    xlim(subplot_axes(i), [0,20]);
-    title(subplot_axes(i), sprintf("%s / %s", ...
-        ref{i}.case.input, ref{i}.case.output));
+    xlim(ax_tile, [0 20]);
+    title(ax_tile, sprintf("%s / %s", ref{i}.case.input, ref{i}.case.output));
 end
 
-% Link axes
-linkprop(subplot_axes, {'XLim','YLim'});
+% Now tile #4 DEFINITELY exists, so we can add the panel
+panelUI = uipanel(fig_main, 'BorderType','none');
 
-%% --------------------------------------------------------------
-%  Second row: UI panel (spans all columns)
-%% --------------------------------------------------------------
-
-panelUI = uipanel(fig_main, ...
-    'BorderType', 'none');
-panelUI.Layout.Tile = 4;        % row 2, col 1
-panelUI.Layout.TileSpan = [1 3]; % span all 3 columns
-
-% Create UI
-initialData = rand(2,3);
-arrayEditorUI(panelUI, initialData);
-
-%% --------------------------------------------------------------
-%  The variable "updatedArray" will be stored via guidata
-%  You can access it anytime:
-%     data = getappdata(panelUI,'EditedArray')
-%% --------------------------------------------------------------
-
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%  Embedded UI function
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-function arrayEditorUI(parentPanel, initialData)
-
-    % Store data in panel (shared storage)
-    setappdata(parentPanel,'EditedArray',initialData);
-
-    % Layout: 3 rows
-    gl = uigridlayout(parentPanel,[3 4]);
-    gl.RowHeight = {200,40,'1x'};
-    gl.ColumnWidth = {'1x','1x','1x','1x'};
-
-    % UI TABLE
-    tbl = uitable(gl, ...
-        'Data', initialData, ...
-        'ColumnEditable', true, ...
-        'RowName', ["Row 1","Row 2"]);
-    tbl.Layout.Row = 1;
-    tbl.Layout.Column = [1 4];
-
-    % DROPDOWN
-    dd = uidropdown(gl, ...
-        'Items', string(1:size(initialData,2)), ...
-        'Value', "1");
-    dd.Layout.Row = 2;
-    dd.Layout.Column = 1;
-
-    % ADD BUTTON
-    btnAdd = uibutton(gl,'Text','Add Column', ...
-        'ButtonPushedFcn', @(~,~) addColumn());
-    btnAdd.Layout.Row = 2;
-    btnAdd.Layout.Column = 2;
-
-    % REMOVE BUTTON
-    btnRemove = uibutton(gl,'Text','Remove Column', ...
-        'ButtonPushedFcn', @(~,~) removeColumn());
-    btnRemove.Layout.Row = 2;
-    btnRemove.Layout.Column = 3;
-
-    % SAVE BUTTON
-    btnSave = uibutton(gl,'Text','Save', ...
-        'ButtonPushedFcn', @(~,~) saveData());
-    btnSave.Layout.Row = 2;
-    btnSave.Layout.Column = 4;
-
-    % ===================== INTERNAL FUNCTIONS =====================
-
-    function updateDropdown()
-        n = size(tbl.Data,2);
-        dd.Items = string(1:n);
-        if str2double(dd.Value) > n
-            dd.Value = string(n);
-        end
-    end
-
-    function addColumn()
-        idx = str2double(dd.Value);
-        data = tbl.Data;
-        n = size(data,2);
-
-        newData = zeros(2,n+1);
-        newData(:,1:idx-1) = data(:,1:idx-1);
-        newData(:,idx) = [0;0];
-        newData(:,idx+1:end) = data(:,idx:end);
-
-        tbl.Data = newData;
-        updateDropdown();
-    end
-
-    function removeColumn()
-        if isempty(dd.Items)
-            return;
-        end
-        idx = str2double(dd.Value);
-        data = tbl.Data;
-        data(:,idx) = [];
-        tbl.Data = data;
-        updateDropdown();
-    end
-
-    function saveData()
-        setappdata(parentPanel,'EditedArray', tbl.Data);
-        disp("Saved array:");
-        disp(tbl.Data);
-    end
-
-end
+% Assign panel to tile 4
+panelUI.Layout.Tile = 4;
+panelUI.Layout.TileSpan = [1 3];
