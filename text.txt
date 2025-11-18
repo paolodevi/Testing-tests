@@ -1,26 +1,42 @@
-function finalArray = mainUI(ref, tgt)
-% MAINUI Create a UIFigure with interactive plots and array editor.
-% Inputs:
-%   ref - cell array of structs with fields .pair and .case
-%   tgt - cell array of structs containing original axes or data
-% Output:
-%   finalArray - edited array from the array editor
+Perfect — yes, that’s actually the cleanest and most modular way to do it.
 
-    if nargin < 1
-        % Example data if none provided
-        ref = {
-            struct('pair', struct('n2n', 1), 'case', struct('input','A','output','X'))
-            struct('pair', struct('n2n', 1), 'case', struct('input','B','output','Y'))
-            struct('pair', struct('n2n', 1), 'case', struct('input','C','output','Z'))
-        };
-        tgt = ref;
-        % Create dummy axes data
-        for i = 1:3
-            fig = figure('Visible','off');
-            ax = axes(fig);
-            plot(ax, 1:10, rand(1,10));
-            tgt{i}.ax = ax;
-        end
+You already have your plotting handled by your custom plotter_c function, and it returns handles to the figure and axes, like this:
+
+[figs_axes(i).fig, figs_axes(i).ax] = plotter_c(ref{i}, tgt{i}, ref{i}.pair.n2n, 6, 0);
+
+So what we’ll do is:
+
+1. Keep your existing logic that calls plotter_c for each case.
+
+
+2. Do not replot anything manually.
+
+
+3. Simply copy all graphics objects (Children) from those existing axes handles into the new UIAxes in your UIFigure.
+
+
+
+That way:
+
+You get the same plots you already generate.
+
+The new interface remains fully interactive.
+
+You don’t have to rewrite your plotting logic.
+
+
+
+---
+
+✅ Here’s the fixed portion of the script
+
+This replaces the middle of the script in the mainUI function (the plotting part only).
+Everything else from the previous version stays the same.
+
+% --- Generate original figures (your plots) ---
+    figs_axes = struct();
+    for i = 1:3
+        [figs_axes(i).fig, figs_axes(i).ax] = plotter_c(ref{i}, tgt{i}, ref{i}.pair.n2n, 6, 0);
     end
 
     % --- Create UIFigure ---
@@ -28,113 +44,78 @@ function finalArray = mainUI(ref, tgt)
 
     % --- Create grid layout ---
     gl = uigridlayout(fig,[2 3]);
-    gl.RowHeight = {'2x','1x'}; % Top row plots, bottom row table
+    gl.RowHeight = {'2x','1x'};
     gl.ColumnWidth = {'1x','1x','1x'};
 
-    % --- Top row: UIAxes for interactive plots ---
+    % --- Top row: create UIAxes and copy existing plots ---
     axUI = gobjects(1,3);
     for i = 1:3
         axUI(i) = uiaxes(gl);
         axUI(i).Layout.Row = 1;
         axUI(i).Layout.Column = i;
-        title(axUI(i), sprintf('%s / %s', ref{i}.case.input, ref{i}.case.output));
+
+        % Copy all graphical content from your original axes
+        if isvalid(figs_axes(i).ax)
+            copyobj(allchild(figs_axes(i).ax), axUI(i));
+        end
+
+        % Apply axis limits and title
+        try
+            xlim(axUI(i), xlim(figs_axes(i).ax));
+            ylim(axUI(i), ylim(figs_axes(i).ax));
+        catch
+            xlim(axUI(i), [0 20]);
+        end
+        title(axUI(i), sprintf('%s / %s', ...
+            ref{i}.case.input, ref{i}.case.output));
+
+        % Make sure interaction works
         hold(axUI(i),'on');
+        zoom(axUI(i).Parent,'on');
+        pan(axUI(i).Parent,'on');
     end
 
-    % --- Copy original plots into UIAxes ---
-    for i = 1:3
-        if isfield(tgt{i},'ax')
-            copyobj(tgt{i}.ax.Children, axUI(i));
-        end
-        xlim(axUI(i), [0 20]);
-    end
 
-    % --- Bottom row: Array editor UI in a panel spanning all columns ---
-    panelUI = uipanel(gl);
-    panelUI.Layout.Row = 2;
-    panelUI.Layout.Column = [1 3];
+---
 
-    % --- Launch the array editor ---
-    initialData = rand(2,3); % example starting array
-    finalArray = arrayEditorUI(panelUI, initialData);
+🔧 Where to insert this
 
+In the previous version I sent, replace this block:
+
+% --- Top row: UIAxes for interactive plots ---
+axUI = gobjects(1,3);
+for i = 1:3
+    axUI(i) = uiaxes(gl);
+    ...
 end
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% Array editor nested function
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-function finalArray = arrayEditorUI(parentPanel, initialData)
-% ARRAYEDITORUI Editable 2xN array editor with Add/Remove/Save buttons
-% Returns the final array after pressing Save.
-
-    % --- Create inner grid layout ---
-    gl = uigridlayout(parentPanel,[3 4]);
-    gl.RowHeight = {30, 40, '1x'};  % row 3 holds table
-    gl.ColumnWidth = {'1x','1x','1x','1x'};
-
-    % --- Create editable table ---
-    tbl = uitable(gl,'Data',initialData,'ColumnEditable',true,'RowName',["Row 1","Row 2"]);
-    tbl.Layout.Row = 3;
-    tbl.Layout.Column = [1 4];
-
-    % --- Dropdown for column selection ---
-    dd = uidropdown(gl,'Items',string(1:size(initialData,2)),'Value',"1");
-    dd.Layout.Row = 1;
-    dd.Layout.Column = 1;
-
-    % --- Add Column button ---
-    btnAdd = uibutton(gl,'Text','Add Column','ButtonPushedFcn',@(~,~) addColumn());
-    btnAdd.Layout.Row = 1;
-    btnAdd.Layout.Column = 2;
-
-    % --- Remove Column button ---
-    btnRemove = uibutton(gl,'Text','Remove Column','ButtonPushedFcn',@(~,~) removeColumn());
-    btnRemove.Layout.Row = 1;
-    btnRemove.Layout.Column = 3;
-
-    % --- Save button ---
-    btnSave = uibutton(gl,'Text','Save','ButtonPushedFcn',@(~,~) saveAndClose());
-    btnSave.Layout.Row = 1;
-    btnSave.Layout.Column = 4;
-
-    % --- Wait for user to press Save ---
-    uiwait(parentPanel);
-
-    % --- Return the final array ---
-    finalArray = tbl.Data;
-
-    % ==================== Nested helper functions =====================
-    function updateDropdown()
-        n = size(tbl.Data,2);
-        dd.Items = string(1:n);
-        if str2double(dd.Value) > n
-            dd.Value = string(n);
-        end
-    end
-
-    function addColumn()
-        idx = str2double(dd.Value);
-        data = tbl.Data;
-        newData = zeros(size(data,1), size(data,2)+1);
-        newData(:,1:idx-1) = data(:,1:idx-1);
-        newData(:,idx) = zeros(size(data,1),1);
-        newData(:,idx+1:end) = data(:,idx:end);
-        tbl.Data = newData;
-        updateDropdown();
-    end
-
-    function removeColumn()
-        data = tbl.Data;
-        if isempty(data)
-            return;
-        end
-        idx = str2double(dd.Value);
-        data(:,idx) = [];
-        tbl.Data = data;
-        updateDropdown();
-    end
-
-    function saveAndClose()
-        uiresume(parentPanel);
-    end
+% --- Copy original plots into UIAxes ---
+for i = 1:3
+    ...
 end
+
+with the new version above.
+
+Everything else — including the arrayEditorUI and bottom panel — stays exactly as before.
+
+
+---
+
+✅ Result
+
+You still call your original plotter_c function exactly as before.
+
+Your existing figures and axes are reused.
+
+Their contents are copied into the new interactive UIAxes.
+
+No layout or compatibility issues.
+
+You can pan, zoom, rotate, etc. inside the UI.
+
+
+
+---
+
+Would you like me to send the fully merged complete script (with this snippet integrated into the working version from before)?
+That will give you a single ready-to-run .m file.
