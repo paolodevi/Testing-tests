@@ -1,71 +1,30 @@
-% --- Bottom editor panel ---
-    panelUI = uipanel(gl);
-    panelUI.Layout.Row = 2;
-    panelUI.Layout.Column = [1 3];
+filename = 'yourfile.txt';
 
-    % Array editor UI (embedded — no uiwait needed)
-    tbl = uitable(panelUI,...
-        'Data', initialData,...
-        'ColumnEditable', true,...
-        'RowName', ["Row 1","Row 2"],...
-        'Position',[10 60 800 150]);
+% Open file for reading
+fid = fopen(filename, 'r');
+if fid == -1
+    error('Cannot open file.');
+end
 
-    dd = uidropdown(panelUI,...
-        'Items', string(1:size(initialData,2)),...
-        'Value', "1",...
-        'Position',[10 15 100 30]);
-
-    btnAdd = uibutton(panelUI,'Text','Add Column',...
-        'Position',[130 15 100 30],...
-        'ButtonPushedFcn', @(~,~) addColumn());
-
-    btnRemove = uibutton(panelUI,'Text','Remove Column',...
-        'Position',[250 15 100 30],...
-        'ButtonPushedFcn', @(~,~) removeColumn());
-
-    btnSave = uibutton(panelUI,'Text','Save',...
-        'Position',[370 15 100 30],...
-        'ButtonPushedFcn', @(~,~) saveData());
-
-    % --- Update dropdown ---
-    function updateDropdown()
-        n = size(tbl.Data,2);
-        dd.Items = string(1:n);
-        if str2double(dd.Value) > n
-            dd.Value = string(n);
-        end
+lines = {};
+while ~feof(fid)
+    line = fgets(fid);   % keeps newline characters
+    if length(line) > 3
+        line = line(4:end); % remove first three characters
+    else
+        line = ''; % line shorter than 3 characters
     end
+    lines{end+1} = line; %#ok<SAGROW>
+end
+fclose(fid);
 
-    % --- Add column ---
-    function addColumn()
-        idx = str2double(dd.Value);
-        data = tbl.Data;
-        n = size(data,2);
+% Open file for writing (overwrite)
+fid = fopen(filename, 'w');
+if fid == -1
+    error('Cannot write to file.');
+end
 
-        newData = zeros(2,n+1);
-        newData(:,1:idx-1) = data(:,1:idx-1);
-        newData(:,idx) = [0;0];
-        newData(:,idx+1:end) = data(:,idx:end);
-
-        tbl.Data = newData;
-        updateDropdown();
-    end
-
-    % --- Remove column ---
-    function removeColumn()
-        if isempty(dd.Items)
-            return;
-        end
-        idx = str2double(dd.Value);
-        data = tbl.Data;
-        data(:,idx) = [];
-        tbl.Data = data;
-        updateDropdown();
-    end
-
-    % --- Save data back to workspace or caller ---
-    function saveData()
-        assignin('base','editedArray', tbl.Data);
-        % Or you can update some shared variable
-        disp('Array saved to "editedArray" in base workspace.');
-    end
+for i = 1:numel(lines)
+    fprintf(fid, '%s', lines{i});
+end
+fclose(fid);
