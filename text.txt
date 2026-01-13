@@ -1,30 +1,44 @@
-filename = 'yourfile.txt';
+% Printing information on the sequence.txt file
+seqFile = fullfile(solutionPath, 'Results', 'sequence.txt');
 
-% Open file for reading
-fid = fopen(filename, 'r');
-if fid == -1
-    error('Cannot open file.');
+%--- Check that the file exists
+if ~exist(seqFile, 'file')
+    error('The file "%s" does not exist.', seqFile);
 end
 
-lines = {};
-while ~feof(fid)
-    line = fgets(fid);   % keeps newline characters
-    if length(line) > 3
-        line = line(4:end); % remove first three characters
-    else
-        line = ''; % line shorter than 3 characters
+%--- Open the file for reading
+fid = fopen(seqFile, 'r');
+if fid == -1
+    error('Could not open "%s" for reading.', seqFile);
+end
+
+% Initialise
+separatorFound = false;
+lineID = NaN;
+currentLine = 0;
+
+% Read the file line-by-line
+while ~separatorFound && ~feof(fid)
+    currentLine = currentLine + 1;
+
+    % Read & trim the line
+    tLine = fgetl(fid);
+    if ~ischar(tLine)
+        break
     end
-    lines{end+1} = line; %#ok<SAGROW>
+    tTrim = strtrim(tLine);
+
+    %--- Detect the separator line: ---...---...---...
+    if ~isempty(regexp(tTrim, '^(---\.\.\.)+$', 'once'))
+        separatorFound = true;   % separator found
+        lineID = currentLine;    % store the line number
+    end
 end
+
+% Close the file
 fclose(fid);
 
-% Open file for writing (overwrite)
-fid = fopen(filename, 'w');
-if fid == -1
-    error('Cannot write to file.');
+%--- Optional safety check
+if ~separatorFound
+    error('Separator line not found in "%s".', seqFile);
 end
-
-for i = 1:numel(lines)
-    fprintf(fid, '%s', lines{i});
-end
-fclose(fid);
