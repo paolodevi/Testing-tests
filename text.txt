@@ -1,44 +1,31 @@
-% Printing information on the sequence.txt file
-seqFile = fullfile(solutionPath, 'Results', 'sequence.txt');
-
-%--- Check that the file exists
-if ~exist(seqFile, 'file')
-    error('The file "%s" does not exist.', seqFile);
-end
-
-%--- Open the file for reading
+% Read the entire file into a cell array
 fid = fopen(seqFile, 'r');
-if fid == -1
-    error('Could not open "%s" for reading.', seqFile);
+fileLines = {};
+while ~feof(fid)
+    fileLines{end+1,1} = fgetl(fid); %#ok<SAGROW>
 end
-
-% Initialise
-separatorFound = false;
-lineID = NaN;
-currentLine = 0;
-
-% Read the file line-by-line
-while ~separatorFound && ~feof(fid)
-    currentLine = currentLine + 1;
-
-    % Read & trim the line
-    tLine = fgetl(fid);
-    if ~ischar(tLine)
-        break
-    end
-    tTrim = strtrim(tLine);
-
-    %--- Detect the separator line: ---...---...---...
-    if ~isempty(regexp(tTrim, '^(---\.\.\.)+$', 'once'))
-        separatorFound = true;   % separator found
-        lineID = currentLine;    % store the line number
-    end
-end
-
-% Close the file
 fclose(fid);
 
-%--- Optional safety check
-if ~separatorFound
-    error('Separator line not found in "%s".', seqFile);
+% Safety check
+if isnan(lineID) || lineID > numel(fileLines)
+    error('Invalid lineID. Cannot insert text.');
 end
+
+% Insert new text AFTER the separator line
+fileLines = [
+    fileLines(1:lineID)
+    newText(:)
+    fileLines(lineID+1:end)
+];
+
+% Write the modified content back to file
+fid = fopen(seqFile, 'w');
+if fid == -1
+    error('Could not open "%s" for writing.', seqFile);
+end
+
+for i = 1:numel(fileLines)
+    fprintf(fid, '%s\n', fileLines{i});
+end
+
+fclose(fid);
