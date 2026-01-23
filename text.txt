@@ -1,24 +1,36 @@
-% Number of match stages
+% Number of stages
 M = numel(matches);
 
-% Initial values: row 1 of reference
-current = matches{1}(1, :);
+% Initialize paths from reference
+paths = matches{1}(1, :).';   % each row = one path
 
-% Loop through each matching stage
 for i = 1:M
     src = matches{i}(1, :);
     dst = matches{i}(2, :);
 
-    % Map current values through this stage
-    [tf, idx] = ismember(current, src);
+    newPaths = [];
 
-    if ~all(tf)
-        error('Some values could not be matched at stage %d', i);
+    for p = 1:size(paths, 1)
+        lastVal = paths(p, end);
+
+        % Find all matches for last value
+        idx = (src == lastVal);
+        nextVals = dst(idx);
+
+        % Expand path
+        for v = 1:numel(nextVals)
+            newPaths = [
+                newPaths
+                paths(p, :) nextVals(v)
+            ];
+        end
     end
 
-    current = dst(idx);
-end
+    % Move to next stage
+    paths = newPaths;
 
-% Final result
-result = [matches{1}(1, :);
-          current];
+    % Early exit if everything dies
+    if isempty(paths)
+        break
+    end
+end
