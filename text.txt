@@ -1,36 +1,234 @@
-% Number of stages
-M = numel(matches);
+Perfect — that’s a very clean and correct approach, and yes, we can do this in a way that lets you prove to yourself that the modal decomposition is right by rebuilding the FRF and matching the original one.
 
-% Initialize paths from reference
-paths = matches{1}(1, :).';   % each row = one path
+I’ll go step by step, keeping it tied to your exact matrices and workflow, not abstract textbook symbols.
 
-for i = 1:M
-    src = matches{i}(1, :);
-    dst = matches{i}(2, :);
 
-    newPaths = [];
+---
 
-    for p = 1:size(paths, 1)
-        lastVal = paths(p, end);
+1️⃣ What you already have (interpreted physically)
 
-        % Find all matches for last value
-        idx = (src == lastVal);
-        nextVals = dst(idx);
+From DMAP you extracted:
 
-        % Expand path
-        for v = 1:numel(nextVals)
-            newPaths = [
-                newPaths
-                paths(p, :) nextVals(v)
-            ];
-        end
-    end
+M_EE → elastic generalized mass (modal space)
 
-    % Move to next stage
-    paths = newPaths;
+K_EE → elastic generalized stiffness (modal space)
 
-    % Early exit if everything dies
-    if isempty(paths)
-        break
-    end
-end
+M_EC → coupling mass between elastic modes and control DOFs
+
+PHI_PE → mode shapes mapping elastic modal DOFs → physical P-set DOFs
+
+
+So your system in modal coordinates is essentially:
+
+\mathbf{M}_{EE}\,\ddot{\xi} + \mathbf{K}_{EE}\,\xi = -\mathbf{M}_{EC}\,\ddot{q}_c
+
+where:
+
+ = elastic modal coordinates
+
+ = control surface generalized coordinates
+
+
+You then add damping ad-hoc (structural damping), which is totally fine.
+
+
+---
+
+2️⃣ Frequency-domain modal formulation (key step)
+
+Assume harmonic motion:
+
+q_c(t) = \hat{q}_c e^{i\omega t}
+\quad \Rightarrow \quad
+\ddot{q}_c = -\omega^2 \hat{q}_c
+
+Then the modal equation becomes:
+
+\left(
+-\omega^2 \mathbf{M}_{EE}
++ (1+i g)\mathbf{K}_{EE}
+\right)\hat{\xi}
+=
+\omega^2 \mathbf{M}_{EC} \hat{q}_c
+
+Which is exactly what your code is doing:
+
+xi(:,ii,jj) = ...
+(-wc(ii)^2*M_EE + K_EE.*(1+1i*g)) \ (wc(ii)^2*M_EC(:,jj));
+
+So far: ✔️ correct modal FRF formulation
+
+
+---
+
+3️⃣ Diagonal modal form (important for modal contribution)
+
+Now the critical assumption:
+
+> M_EE and K_EE are diagonal (or nearly diagonal)
+
+
+
+This is normally true for:
+
+SOL 103 / modal reduction
+
+Craig–Bampton elastic modes
+
+Generalized eigenvectors normalized in DMAP
+
+
+Let’s assume:
+
+\mathbf{M}_{EE} = \mathrm{diag}(m_r), \quad
+\mathbf{K}_{EE} = \mathrm{diag}(k_r)
+
+Then each elastic mode is independent, and the modal FRF becomes:
+
+\hat{\xi}_r(\omega)
+=
+\frac{\omega^2\, M_{EC}(r,j)}
+{k_r (1+i g_r) - \omega^2 m_r}
+
+This equation is gold — this is where modal contribution comes from.
+
+
+---
+
+4️⃣ Modal FRF matrix (clean formulation)
+
+Define the modal dynamic stiffness:
+
+H_r(\omega)
+=
+\frac{1}
+{k_r (1+i g_r) - \omega^2 m_r}
+
+Then for control input :
+
+\hat{\xi}_r(\omega)
+=
+\omega^2 \, H_r(\omega)\, M_{EC}(r,j)
+
+Stacking all modes:
+
+\hat{\xi}(\omega)
+=
+\omega^2 \,
+\mathbf{H}(\omega)\,
+\mathbf{M}_{EC}(:,j)
+
+with:
+
+\mathbf{H}(\omega) = \mathrm{diag}(H_r(\omega))
+
+This is the modal FRF you want.
+
+
+---
+
+5️⃣ Rebuilding the physical FRF (validation step)
+
+Now go back to physical space:
+
+\hat{x}(\omega) = \mathbf{\Phi}_{PE}\, \hat{\xi}(\omega)
+
+At the IMU grid:
+
+x_IMU = PHI_PE_IMU * xi;
+
+Then angular rate FRF:
+
+\dot{q}(\omega) = i\omega\, x(\omega)
+
+which matches:
+
+frf = 1i * wc .* x(...)
+
+So if everything is consistent:
+
+> FRF rebuilt from diagonal modal formulation ≈ original FRF
+
+
+
+(up to numerical tolerance)
+
+
+---
+
+6️⃣ Modal contribution (what you really want)
+
+Now the fun part.
+
+The contribution of mode r to a physical DOF  is:
+
+x_k^{(r)}(\omega)
+=
+\phi_{k r}
+\,
+\omega^2
+\,
+H_r(\omega)
+\,
+M_{EC}(r,j)
+
+You can compute:
+
+magnitude vs frequency
+
+percentage contribution
+
+dominant mode per frequency bin
+
+
+Example metric:
+
+\eta_r(\omega)
+=
+\frac{|x^{(r)}(\omega)|}
+{\sum_s |x^{(s)}(\omega)|}
+
+This gives you a clear modal dominance map.
+
+
+---
+
+7️⃣ Practical validation checklist
+
+Before trusting the results, check:
+
+1. M_EE and K_EE ≈ diagonal
+
+
+2. Natural frequencies:
+
+
+
+\omega_r = \sqrt{k_r / m_r}
+
+3. Rebuilt FRF overlays original FRF
+
+
+4. Peaks align with modal frequencies
+
+
+
+If those are true → your modal decomposition is physically correct.
+
+
+---
+
+8️⃣ What we can do next (your choice)
+
+Next logical steps:
+
+🔍 Write clean MATLAB code for per-mode FRF reconstruction
+
+📊 Plot modal contribution vs frequency
+
+🧠 Interpret control-surface → mode coupling via M_EC
+
+🛠 Handle non-diagonal M_EE / K_EE (if needed)
+
+
+Tell me what you want to tackle next — we’re in very good shape already.
