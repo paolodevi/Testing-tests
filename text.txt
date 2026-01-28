@@ -1,234 +1,90 @@
-Perfect — that’s a very clean and correct approach, and yes, we can do this in a way that lets you prove to yourself that the modal decomposition is right by rebuilding the FRF and matching the original one.
-
-I’ll go step by step, keeping it tied to your exact matrices and workflow, not abstract textbook symbols.
-
-
----
-
-1️⃣ What you already have (interpreted physically)
-
-From DMAP you extracted:
-
-M_EE → elastic generalized mass (modal space)
-
-K_EE → elastic generalized stiffness (modal space)
-
-M_EC → coupling mass between elastic modes and control DOFs
-
-PHI_PE → mode shapes mapping elastic modal DOFs → physical P-set DOFs
-
-
-So your system in modal coordinates is essentially:
-
-\mathbf{M}_{EE}\,\ddot{\xi} + \mathbf{K}_{EE}\,\xi = -\mathbf{M}_{EC}\,\ddot{q}_c
-
-where:
-
- = elastic modal coordinates
-
- = control surface generalized coordinates
-
-
-You then add damping ad-hoc (structural damping), which is totally fine.
-
-
----
-
-2️⃣ Frequency-domain modal formulation (key step)
-
-Assume harmonic motion:
-
-q_c(t) = \hat{q}_c e^{i\omega t}
-\quad \Rightarrow \quad
-\ddot{q}_c = -\omega^2 \hat{q}_c
-
-Then the modal equation becomes:
-
-\left(
--\omega^2 \mathbf{M}_{EE}
-+ (1+i g)\mathbf{K}_{EE}
-\right)\hat{\xi}
-=
-\omega^2 \mathbf{M}_{EC} \hat{q}_c
-
-Which is exactly what your code is doing:
-
-xi(:,ii,jj) = ...
-(-wc(ii)^2*M_EE + K_EE.*(1+1i*g)) \ (wc(ii)^2*M_EC(:,jj));
-
-So far: ✔️ correct modal FRF formulation
-
-
----
-
-3️⃣ Diagonal modal form (important for modal contribution)
-
-Now the critical assumption:
-
-> M_EE and K_EE are diagonal (or nearly diagonal)
-
-
-
-This is normally true for:
-
-SOL 103 / modal reduction
-
-Craig–Bampton elastic modes
-
-Generalized eigenvectors normalized in DMAP
-
-
-Let’s assume:
-
-\mathbf{M}_{EE} = \mathrm{diag}(m_r), \quad
-\mathbf{K}_{EE} = \mathrm{diag}(k_r)
-
-Then each elastic mode is independent, and the modal FRF becomes:
-
-\hat{\xi}_r(\omega)
-=
-\frac{\omega^2\, M_{EC}(r,j)}
-{k_r (1+i g_r) - \omega^2 m_r}
-
-This equation is gold — this is where modal contribution comes from.
-
-
----
-
-4️⃣ Modal FRF matrix (clean formulation)
-
-Define the modal dynamic stiffness:
-
-H_r(\omega)
-=
-\frac{1}
-{k_r (1+i g_r) - \omega^2 m_r}
-
-Then for control input :
-
-\hat{\xi}_r(\omega)
-=
-\omega^2 \, H_r(\omega)\, M_{EC}(r,j)
-
-Stacking all modes:
-
-\hat{\xi}(\omega)
-=
-\omega^2 \,
-\mathbf{H}(\omega)\,
-\mathbf{M}_{EC}(:,j)
-
-with:
-
-\mathbf{H}(\omega) = \mathrm{diag}(H_r(\omega))
-
-This is the modal FRF you want.
-
-
----
-
-5️⃣ Rebuilding the physical FRF (validation step)
-
-Now go back to physical space:
-
-\hat{x}(\omega) = \mathbf{\Phi}_{PE}\, \hat{\xi}(\omega)
-
-At the IMU grid:
-
-x_IMU = PHI_PE_IMU * xi;
-
-Then angular rate FRF:
-
-\dot{q}(\omega) = i\omega\, x(\omega)
-
-which matches:
-
-frf = 1i * wc .* x(...)
-
-So if everything is consistent:
-
-> FRF rebuilt from diagonal modal formulation ≈ original FRF
-
-
-
-(up to numerical tolerance)
-
-
----
-
-6️⃣ Modal contribution (what you really want)
-
-Now the fun part.
-
-The contribution of mode r to a physical DOF  is:
-
-x_k^{(r)}(\omega)
-=
-\phi_{k r}
-\,
-\omega^2
-\,
-H_r(\omega)
-\,
-M_{EC}(r,j)
-
-You can compute:
-
-magnitude vs frequency
-
-percentage contribution
-
-dominant mode per frequency bin
-
-
-Example metric:
-
-\eta_r(\omega)
-=
-\frac{|x^{(r)}(\omega)|}
-{\sum_s |x^{(s)}(\omega)|}
-
-This gives you a clear modal dominance map.
-
-
----
-
-7️⃣ Practical validation checklist
-
-Before trusting the results, check:
-
-1. M_EE and K_EE ≈ diagonal
-
-
-2. Natural frequencies:
-
-
-
-\omega_r = \sqrt{k_r / m_r}
-
-3. Rebuilt FRF overlays original FRF
-
-
-4. Peaks align with modal frequencies
-
-
-
-If those are true → your modal decomposition is physically correct.
-
-
----
-
-8️⃣ What we can do next (your choice)
-
-Next logical steps:
-
-🔍 Write clean MATLAB code for per-mode FRF reconstruction
-
-📊 Plot modal contribution vs frequency
-
-🧠 Interpret control-surface → mode coupling via M_EC
-
-🛠 Handle non-diagonal M_EE / K_EE (if needed)
-
-
-Tell me what you want to tackle next — we’re in very good shape already.
+%% FRAC-based matching of two FRFs
+clear; clc; close all;
+
+%% ------------------------------------------------------------
+% USER INPUT SECTION
+% ------------------------------------------------------------
+
+% Frequency vectors (Hz)
+f1 = linspace(0, 500, 2000);   % FRF 1 frequency axis
+f2 = linspace(0, 500, 2000);   % FRF 2 frequency axis
+
+% Example FRFs (replace with your real data)
+% These are just demo systems with slight dynamic differences
+H1 = 1 ./ (1 - (f1/120).^2 + 1i*0.02*(f1/120));
+H2 = 1 ./ (1 - (f2/125).^2 + 1i*0.025*(f2/125));
+
+% Ensure column vectors
+H1 = H1(:);
+H2 = H2(:);
+
+%% ------------------------------------------------------------
+% FRAC COMPUTATION
+% ------------------------------------------------------------
+
+N1 = length(H1);
+N2 = length(H2);
+
+FRAC = zeros(N1, N2);
+
+for i = 1:N1
+    for j = 1:N2
+        num = abs(conj(H1(i)) * H2(j))^2;
+        den = (conj(H1(i)) * H1(i)) * (conj(H2(j)) * H2(j));
+        FRAC(i,j) = num / den;
+    end
+end
+
+%% ------------------------------------------------------------
+% MATCHING FREQUENCY POINTS USING FRAC
+% ------------------------------------------------------------
+
+% For each frequency in FRF 1, find best matching point in FRF 2
+[FRAC_max, idx_match] = max(FRAC, [], 2);
+
+f2_matched = f2(idx_match);
+
+%% ------------------------------------------------------------
+% PLOTTING
+% ------------------------------------------------------------
+
+figure('Color','w');
+
+subplot(2,2,1)
+imagesc(f2, f1, FRAC)
+axis xy
+xlabel('Frequency FRF 2 (Hz)')
+ylabel('Frequency FRF 1 (Hz)')
+title('FRAC Matrix')
+colorbar
+
+subplot(2,2,2)
+plot(f1, FRAC_max, 'LineWidth',1.5)
+xlabel('Frequency FRF 1 (Hz)')
+ylabel('Max FRAC')
+title('Best FRAC Value per Frequency')
+grid on
+
+subplot(2,2,3)
+plot(f1, f2_matched, 'LineWidth',1.5)
+xlabel('Frequency FRF 1 (Hz)')
+ylabel('Matched Frequency FRF 2 (Hz)')
+title('Frequency Mapping via FRAC')
+grid on
+
+subplot(2,2,4)
+plot(f1, abs(H1), 'b', 'LineWidth',1.5); hold on
+plot(f2_matched, abs(H2(idx_match)), 'r--', 'LineWidth',1.5)
+xlabel('Frequency (Hz)')
+ylabel('|H|')
+legend('FRF 1','Matched FRF 2')
+title('Amplitude Comparison after FRAC Matching')
+grid on
+
+%% ------------------------------------------------------------
+% OPTIONAL: DISPLAY SOME MATCH RESULTS
+% ------------------------------------------------------------
+
+disp('Frequency matching (first 10 points):')
+disp(table(f1(1:10)', f2_matched(1:10)', FRAC_max(1:10), ...
+    'VariableNames',{'FRF1_Hz','Matched_FRF2_Hz','FRAC'}))
