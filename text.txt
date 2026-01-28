@@ -1,87 +1,81 @@
-%% Windowed FRAC for frequency matching
+%% Pascual FDAC + FRSF Model Correlation (MATLAB)
+
 clear; clc; close all;
 
-%% ------------------------------------------------------------
-% USER INPUT
-% ------------------------------------------------------------
+%% User input / example data
 
-f = linspace(0,500,2000);     % same grid assumed
-df = f(2) - f(1);
+% Frequency vectors
+f1 = linspace(0,500,2000)';  % FRF1 freq
+f2 = linspace(0,500,2000)';  % FRF2 freq
 
-H1 = 1 ./ (1 - (f/120).^2 + 1i*0.02*(f/120));
-H2 = 1 ./ (1 - (f/125).^2 + 1i*0.025*(f/125));
+% Example FRFs (can replace with measured or FE data)
+H1 = 1 ./ (1 - (f1/120).^2 + 1i*0.02*(f1/120));
+H2 = 1 ./ (1 - (f2/125).^2 + 1i*0.025*(f2/125));
 
-H1 = H1(:);
-H2 = H2(:);
+N1 = length(f1);
+N2 = length(f2);
 
-% Half-window size (Hz)
-window_Hz = 3;
-half_win = round(window_Hz / df);
+FDAC = zeros(N1,N2);
+FRSF = zeros(N1,N2);
 
-N = length(f);
-FRAC = nan(N,N);
+%% Compute FDAC & FRSF
 
-%% ------------------------------------------------------------
-% WINDOWED FRAC COMPUTATION
-% ------------------------------------------------------------
-
-for i = 1:N
-    idx1 = max(1,i-half_win):min(N,i+half_win);
-    v1 = H1(idx1);
-
-    for j = 1:N
-        idx2 = max(1,j-half_win):min(N,j+half_win);
-        v2 = H2(idx2);
-
-        % Enforce same vector length
-        L = min(length(v1), length(v2));
-        v1s = v1(1:L);
-        v2s = v2(1:L);
-
-        num = abs(v1s' * v2s)^2;
-        den = (v1s' * v1s) * (v2s' * v2s);
-
-        FRAC(i,j) = num / den;
+for i=1:N1
+    v1 = H1(i);
+    for j=1:N2
+        v2 = H2(j);
+        % FDAC (shape + freq match)
+        num = abs(conj(v1)*v2)^2;
+        den = (conj(v1)*v1)*(conj(v2)*v2);
+        FDAC(i,j) = num/den;
+        % FRSF (amplitude scale)
+        FRSF(i,j) = (conj(v1)*v2) / (conj(v1)*v1);
     end
 end
 
-%% ------------------------------------------------------------
-% MATCHING
-% ------------------------------------------------------------
+%% Best matching indices
 
-[FRAC_max, idx_match] = max(FRAC, [], 2);
-f_matched = f(idx_match);
+[FDAC_max, idx_match] = max(FDAC,[],2);
 
-%% ------------------------------------------------------------
-% PLOTS
-% ------------------------------------------------------------
+f2_matched = f2(idx_match);
+scale_factors = FRSF(sub2ind(size(FRSF), (1:N1)', idx_match));
+
+%% Objective function values
+
+J_values = (1 - FDAC_max) + abs(scale_factors - 1).^2;
+
+%% Plot results
 
 figure('Color','w');
 
 subplot(2,2,1)
-imagesc(f,f,FRAC)
-axis xy
-xlabel('FRF 2 Frequency (Hz)')
-ylabel('FRF 1 Frequency (Hz)')
-title('Windowed FRAC Matrix')
+imagesc(f2,f1,FDAC); axis xy
+xlabel('Frequency FRF2 (Hz)')
+ylabel('Frequency FRF1 (Hz)')
+title('FDAC Matrix')
 colorbar
 
 subplot(2,2,2)
-plot(f, FRAC_max,'LineWidth',1.5)
-xlabel('Frequency FRF 1 (Hz)')
-ylabel('Max FRAC')
+plot(f1,FDAC_max,'b','LineWidth',1.5)
+xlabel('Frequency FRF1 (Hz)')
+ylabel('FDAC')
+title('Maximum FDAC per freq')
 grid on
 
 subplot(2,2,3)
-plot(f, f_matched,'LineWidth',1.5)
-xlabel('FRF 1 Frequency (Hz)')
-ylabel('Matched FRF 2 Frequency (Hz)')
+plot(f1,real(scale_factors),'r','LineWidth',1.5)
+xlabel('Frequency FRF1 (Hz)')
+ylabel('Real Scale')
+title('FRSF (real part) matches')
 grid on
 
 subplot(2,2,4)
-plot(f, abs(H1),'b','LineWidth',1.5); hold on
-plot(f_matched, abs(H2(idx_match)),'r--','LineWidth',1.5)
-legend('FRF 1','Matched FRF 2')
-xlabel('Frequency (Hz)')
-ylabel('|H|')
+plot(f1,J_values,'k','LineWidth',1.5)
+xlabel('Frequency FRF1 (Hz)')
+ylabel('J objective')
+title('Combined FDAC + FRSF objective')
 grid on
+
+%% Report a few matches
+disp(table(f1(1:10), f2_matched(1:10), FDAC_max(1:10), real(scale_factors(1:10)), ...
+    'VariableNames',{'freq1','freq2_match','FDAC','scale_real'}))
