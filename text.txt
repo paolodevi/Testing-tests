@@ -1,90 +1,87 @@
-%% FRAC-based matching of two FRFs
+%% Windowed FRAC for frequency matching
 clear; clc; close all;
 
 %% ------------------------------------------------------------
-% USER INPUT SECTION
+% USER INPUT
 % ------------------------------------------------------------
 
-% Frequency vectors (Hz)
-f1 = linspace(0, 500, 2000);   % FRF 1 frequency axis
-f2 = linspace(0, 500, 2000);   % FRF 2 frequency axis
+f = linspace(0,500,2000);     % same grid assumed
+df = f(2) - f(1);
 
-% Example FRFs (replace with your real data)
-% These are just demo systems with slight dynamic differences
-H1 = 1 ./ (1 - (f1/120).^2 + 1i*0.02*(f1/120));
-H2 = 1 ./ (1 - (f2/125).^2 + 1i*0.025*(f2/125));
+H1 = 1 ./ (1 - (f/120).^2 + 1i*0.02*(f/120));
+H2 = 1 ./ (1 - (f/125).^2 + 1i*0.025*(f/125));
 
-% Ensure column vectors
 H1 = H1(:);
 H2 = H2(:);
 
+% Half-window size (Hz)
+window_Hz = 3;
+half_win = round(window_Hz / df);
+
+N = length(f);
+FRAC = nan(N,N);
+
 %% ------------------------------------------------------------
-% FRAC COMPUTATION
+% WINDOWED FRAC COMPUTATION
 % ------------------------------------------------------------
 
-N1 = length(H1);
-N2 = length(H2);
+for i = 1:N
+    idx1 = max(1,i-half_win):min(N,i+half_win);
+    v1 = H1(idx1);
 
-FRAC = zeros(N1, N2);
+    for j = 1:N
+        idx2 = max(1,j-half_win):min(N,j+half_win);
+        v2 = H2(idx2);
 
-for i = 1:N1
-    for j = 1:N2
-        num = abs(conj(H1(i)) * H2(j))^2;
-        den = (conj(H1(i)) * H1(i)) * (conj(H2(j)) * H2(j));
+        % Enforce same vector length
+        L = min(length(v1), length(v2));
+        v1s = v1(1:L);
+        v2s = v2(1:L);
+
+        num = abs(v1s' * v2s)^2;
+        den = (v1s' * v1s) * (v2s' * v2s);
+
         FRAC(i,j) = num / den;
     end
 end
 
 %% ------------------------------------------------------------
-% MATCHING FREQUENCY POINTS USING FRAC
+% MATCHING
 % ------------------------------------------------------------
 
-% For each frequency in FRF 1, find best matching point in FRF 2
 [FRAC_max, idx_match] = max(FRAC, [], 2);
-
-f2_matched = f2(idx_match);
+f_matched = f(idx_match);
 
 %% ------------------------------------------------------------
-% PLOTTING
+% PLOTS
 % ------------------------------------------------------------
 
 figure('Color','w');
 
 subplot(2,2,1)
-imagesc(f2, f1, FRAC)
+imagesc(f,f,FRAC)
 axis xy
-xlabel('Frequency FRF 2 (Hz)')
-ylabel('Frequency FRF 1 (Hz)')
-title('FRAC Matrix')
+xlabel('FRF 2 Frequency (Hz)')
+ylabel('FRF 1 Frequency (Hz)')
+title('Windowed FRAC Matrix')
 colorbar
 
 subplot(2,2,2)
-plot(f1, FRAC_max, 'LineWidth',1.5)
+plot(f, FRAC_max,'LineWidth',1.5)
 xlabel('Frequency FRF 1 (Hz)')
 ylabel('Max FRAC')
-title('Best FRAC Value per Frequency')
 grid on
 
 subplot(2,2,3)
-plot(f1, f2_matched, 'LineWidth',1.5)
-xlabel('Frequency FRF 1 (Hz)')
-ylabel('Matched Frequency FRF 2 (Hz)')
-title('Frequency Mapping via FRAC')
+plot(f, f_matched,'LineWidth',1.5)
+xlabel('FRF 1 Frequency (Hz)')
+ylabel('Matched FRF 2 Frequency (Hz)')
 grid on
 
 subplot(2,2,4)
-plot(f1, abs(H1), 'b', 'LineWidth',1.5); hold on
-plot(f2_matched, abs(H2(idx_match)), 'r--', 'LineWidth',1.5)
+plot(f, abs(H1),'b','LineWidth',1.5); hold on
+plot(f_matched, abs(H2(idx_match)),'r--','LineWidth',1.5)
+legend('FRF 1','Matched FRF 2')
 xlabel('Frequency (Hz)')
 ylabel('|H|')
-legend('FRF 1','Matched FRF 2')
-title('Amplitude Comparison after FRAC Matching')
 grid on
-
-%% ------------------------------------------------------------
-% OPTIONAL: DISPLAY SOME MATCH RESULTS
-% ------------------------------------------------------------
-
-disp('Frequency matching (first 10 points):')
-disp(table(f1(1:10)', f2_matched(1:10)', FRAC_max(1:10), ...
-    'VariableNames',{'FRF1_Hz','Matched_FRF2_Hz','FRAC'}))
