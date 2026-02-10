@@ -1,81 +1,130 @@
-%% Pascual FDAC + FRSF Model Correlation (MATLAB)
+Perfect — this is a plot-with-inset-zoom problem, not an image one. Below is the canonical MATLAB solution: full plot, a zoomed inset in the top-left, and a rectangle showing the zoomed region on the main axes.
 
-clear; clc; close all;
 
-%% User input / example data
+---
 
-% Frequency vectors
-f1 = linspace(0,500,2000)';  % FRF1 freq
-f2 = linspace(0,500,2000)';  % FRF2 freq
+Full plot + zoomed inset + highlighted zoom region
 
-% Example FRFs (can replace with measured or FE data)
-H1 = 1 ./ (1 - (f1/120).^2 + 1i*0.02*(f1/120));
-H2 = 1 ./ (1 - (f2/125).^2 + 1i*0.025*(f2/125));
+figure
 
-N1 = length(f1);
-N2 = length(f2);
+% ---- Main axes ----
+axMain = axes;
+plot(x, y, 'LineWidth', 1.2)
+grid on
+hold on
 
-FDAC = zeros(N1,N2);
-FRSF = zeros(N1,N2);
+% Define zoom region (DATA coordinates)
+xZoom = [2.5 3.2];
+yZoom = [0.4 0.8];
 
-%% Compute FDAC & FRSF
+% Draw rectangle showing zoom area
+rectangle('Position', ...
+    [xZoom(1), yZoom(1), diff(xZoom), diff(yZoom)], ...
+    'EdgeColor', 'r', ...
+    'LineWidth', 1.5, ...
+    'LineStyle', '--');
 
-for i=1:N1
-    v1 = H1(i);
-    for j=1:N2
-        v2 = H2(j);
-        % FDAC (shape + freq match)
-        num = abs(conj(v1)*v2)^2;
-        den = (conj(v1)*v1)*(conj(v2)*v2);
-        FDAC(i,j) = num/den;
-        % FRSF (amplitude scale)
-        FRSF(i,j) = (conj(v1)*v2) / (conj(v1)*v1);
-    end
-end
+% ---- Inset axes (top-left corner) ----
+axInset = axes('Position', [0.15 0.65 0.25 0.25]); % normalized figure units
+box on
+hold on
 
-%% Best matching indices
-
-[FDAC_max, idx_match] = max(FDAC,[],2);
-
-f2_matched = f2(idx_match);
-scale_factors = FRSF(sub2ind(size(FRSF), (1:N1)', idx_match));
-
-%% Objective function values
-
-J_values = (1 - FDAC_max) + abs(scale_factors - 1).^2;
-
-%% Plot results
-
-figure('Color','w');
-
-subplot(2,2,1)
-imagesc(f2,f1,FDAC); axis xy
-xlabel('Frequency FRF2 (Hz)')
-ylabel('Frequency FRF1 (Hz)')
-title('FDAC Matrix')
-colorbar
-
-subplot(2,2,2)
-plot(f1,FDAC_max,'b','LineWidth',1.5)
-xlabel('Frequency FRF1 (Hz)')
-ylabel('FDAC')
-title('Maximum FDAC per freq')
+plot(x, y, 'LineWidth', 1.2)
+xlim(xZoom)
+ylim(yZoom)
 grid on
 
-subplot(2,2,3)
-plot(f1,real(scale_factors),'r','LineWidth',1.5)
-xlabel('Frequency FRF1 (Hz)')
-ylabel('Real Scale')
-title('FRSF (real part) matches')
-grid on
+% Optional: reduce clutter
+set(axInset, 'FontSize', 8)
 
-subplot(2,2,4)
-plot(f1,J_values,'k','LineWidth',1.5)
-xlabel('Frequency FRF1 (Hz)')
-ylabel('J objective')
-title('Combined FDAC + FRSF objective')
-grid on
+% Keep main axes active
+axes(axMain)
 
-%% Report a few matches
-disp(table(f1(1:10), f2_matched(1:10), FDAC_max(1:10), real(scale_factors(1:10)), ...
-    'VariableNames',{'freq1','freq2_match','FDAC','scale_real'}))
+
+---
+
+Key points (important)
+
+1. Rectangle is in data coordinates
+
+Because this is a plot, rectangle uses axis data units, not pixels.
+
+[x0 y0 width height]
+
+This makes it robust if you rescale axes.
+
+
+---
+
+2. Inset position uses normalized figure coordinates
+
+axes('Position', [left bottom width height])
+
+Top-left corner ≈ [0.15 0.65 0.25 0.25]
+Adjust as needed.
+
+
+---
+
+3. Same data plotted twice
+
+The inset is just another axes plotting the same data, but with xlim/ylim set to the zoom region.
+
+
+---
+
+Optional: draw connecting lines (publication-quality)
+
+annotation('line', [0.25 0.35], [0.65 0.45])
+annotation('line', [0.40 0.55], [0.65 0.45])
+
+(These use figure coordinates, so tweak visually.)
+
+
+---
+
+Optional: automatically link limits
+
+If you want changes in zoom limits to propagate:
+
+linkaxes([axMain axInset],'xy')
+
+
+---
+
+Minimal example (copy-paste ready)
+
+x = linspace(0,10,2000);
+y = sin(x).*exp(-0.1*x);
+
+% Zoom region
+xZoom = [2 3];
+yZoom = [0.2 0.7];
+
+figure
+axMain = axes;
+plot(x,y), grid on, hold on
+
+rectangle('Position',[xZoom(1), yZoom(1), diff(xZoom), diff(yZoom)], ...
+          'EdgeColor','r','LineWidth',1.5)
+
+axInset = axes('Position',[0.15 0.65 0.25 0.25]);
+plot(x,y), grid on
+xlim(xZoom), ylim(yZoom)
+box on
+
+
+---
+
+If you want next-level polish, I can show you:
+
+automatic inset placement avoiding data overlap
+
+dynamic zoom rectangle linked to inset limits
+
+LaTeX-ready styling for journal figures
+
+multiple zoom insets
+
+
+Just tell me your use case (paper, presentation, exploratory).
