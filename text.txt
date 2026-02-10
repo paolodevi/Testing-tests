@@ -1,130 +1,150 @@
-Perfect — this is a plot-with-inset-zoom problem, not an image one. Below is the canonical MATLAB solution: full plot, a zoomed inset in the top-left, and a rectangle showing the zoomed region on the main axes.
+Thanks — this is a classic MATLAB axes-state issue, not a conceptual one.
+What’s happening is:
+
+> The rectangle is drawn on the correct axes, but the inset axes is either not active or is being overwritten, so your “second image” (zoomed plot) never really takes effect.
+
+
+
+Below is a robust, failure-proof pattern that avoids all of MATLAB’s axes-focus pitfalls.
 
 
 ---
 
-Full plot + zoomed inset + highlighted zoom region
+✅ Correct, robust solution (works reliably)
 
-figure
+Key fixes compared to your attempt
 
-% ---- Main axes ----
-axMain = axes;
-plot(x, y, 'LineWidth', 1.2)
-grid on
-hold on
+1. Explicitly target axes when plotting
 
-% Define zoom region (DATA coordinates)
-xZoom = [2.5 3.2];
-yZoom = [0.4 0.8];
 
-% Draw rectangle showing zoom area
-rectangle('Position', ...
-    [xZoom(1), yZoom(1), diff(xZoom), diff(yZoom)], ...
-    'EdgeColor', 'r', ...
-    'LineWidth', 1.5, ...
-    'LineStyle', '--');
+2. Disable axes replacement
 
-% ---- Inset axes (top-left corner) ----
-axInset = axes('Position', [0.15 0.65 0.25 0.25]); % normalized figure units
-box on
-hold on
 
-plot(x, y, 'LineWidth', 1.2)
-xlim(xZoom)
-ylim(yZoom)
-grid on
+3. Force inset axes to stay on top
 
-% Optional: reduce clutter
-set(axInset, 'FontSize', 8)
 
-% Keep main axes active
-axes(axMain)
 
 
 ---
 
-Key points (important)
-
-1. Rectangle is in data coordinates
-
-Because this is a plot, rectangle uses axis data units, not pixels.
-
-[x0 y0 width height]
-
-This makes it robust if you rescale axes.
-
-
----
-
-2. Inset position uses normalized figure coordinates
-
-axes('Position', [left bottom width height])
-
-Top-left corner ≈ [0.15 0.65 0.25 0.25]
-Adjust as needed.
-
-
----
-
-3. Same data plotted twice
-
-The inset is just another axes plotting the same data, but with xlim/ylim set to the zoom region.
-
-
----
-
-Optional: draw connecting lines (publication-quality)
-
-annotation('line', [0.25 0.35], [0.65 0.45])
-annotation('line', [0.40 0.55], [0.65 0.45])
-
-(These use figure coordinates, so tweak visually.)
-
-
----
-
-Optional: automatically link limits
-
-If you want changes in zoom limits to propagate:
-
-linkaxes([axMain axInset],'xy')
-
-
----
-
-Minimal example (copy-paste ready)
+Minimal working example (copy–paste)
 
 x = linspace(0,10,2000);
 y = sin(x).*exp(-0.1*x);
 
-% Zoom region
-xZoom = [2 3];
-yZoom = [0.2 0.7];
+% Zoom region (DATA coordinates)
+xZoom = [2.5 3.2];
+yZoom = [0.4 0.8];
 
 figure
-axMain = axes;
-plot(x,y), grid on, hold on
 
-rectangle('Position',[xZoom(1), yZoom(1), diff(xZoom), diff(yZoom)], ...
-          'EdgeColor','r','LineWidth',1.5)
+% ================= MAIN AXES =================
+axMain = axes('Position',[0.1 0.1 0.85 0.85]);
+plot(axMain, x, y, 'LineWidth', 1.2)
+grid(axMain,'on')
+hold(axMain,'on')
 
-axInset = axes('Position',[0.15 0.65 0.25 0.25]);
-plot(x,y), grid on
-xlim(xZoom), ylim(yZoom)
-box on
+rectangle(axMain, ...
+    'Position',[xZoom(1), yZoom(1), diff(xZoom), diff(yZoom)], ...
+    'EdgeColor','r', ...
+    'LineWidth',1.5, ...
+    'LineStyle','--');
+
+% ================= INSET AXES =================
+axInset = axes( ...
+    'Position',[0.15 0.65 0.25 0.25], ...
+    'Box','on', ...
+    'Layer','top', ...
+    'FontSize',8);
+
+plot(axInset, x, y, 'LineWidth', 1.2)
+grid(axInset,'on')
+
+xlim(axInset, xZoom)
+ylim(axInset, yZoom)
 
 
 ---
 
-If you want next-level polish, I can show you:
+🔍 Why your previous version failed
 
-automatic inset placement avoiding data overlap
+Problem 1 — plot(x,y) without axis handle
 
-dynamic zoom rectangle linked to inset limits
+MATLAB plots into whatever axes is current, which is not guaranteed to be the inset.
 
-LaTeX-ready styling for journal figures
+❌ Fragile:
+
+axes(axInset)
+plot(x,y)
+
+✅ Correct:
+
+plot(axInset, x, y)
+
+
+---
+
+Problem 2 — inset axes hidden or overwritten
+
+If the main axes redraws (e.g. hold off, cla, or resizing), it can cover the inset.
+
+Fix:
+
+'Layer','top'
+
+
+---
+
+Problem 3 — limits applied to wrong axes
+
+Without axis handles, xlim / ylim often affect the main axes instead.
+
+Fix:
+
+xlim(axInset, xZoom)
+ylim(axInset, yZoom)
+
+
+---
+
+✅ Debug checklist (quick)
+
+If the inset doesn’t work, check:
+
+gca == axInset   % should be true when plotting inset
+
+If false → MATLAB is plotting in the wrong axes.
+
+
+---
+
+✨ Optional enhancements (if you want)
+
+Draw connecting lines (publication quality)
+
+annotation('line',[0.28 0.38],[0.65 0.45])
+annotation('line',[0.40 0.55],[0.65 0.45])
+
+Prevent accidental overwrites
+
+set(axMain,'NextPlot','add')
+set(axInset,'NextPlot','replacechildren')
+
+
+---
+
+Bottom line
+
+Your idea was correct — the failure is due to MATLAB’s implicit axes handling.
+Using explicit axes handles everywhere makes this 100% reliable.
+
+If you want, tell me:
+
+MATLAB version
+
+2D vs 3D plot
 
 multiple zoom insets
 
 
-Just tell me your use case (paper, presentation, exploratory).
+and I’ll tailor it exactly to your figure style.
