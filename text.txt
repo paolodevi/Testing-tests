@@ -1,170 +1,242 @@
-Good — now we’re dealing with two separate graphical issues:
+Good — now we’re in geometric region construction.
 
-1. Some VEAS lines intersect the top boundary (h = h_max) but are not labeled
+You have:
 
+4 intersecting curves 
 
-2. The VEAS curves extend outside the envelope (M > 1)
+They form a closed region
 
+You want:
 
+Border drawn
 
-Both are geometric clipping problems. Let’s fix them cleanly.
+Interior filled
 
-
----
-
-✅ Problem 1 — Missing Labels at the Top Boundary
-
-Right now you are only checking intersection with:
-
-M = 1   (right border)
-
-But some VEAS lines instead intersect:
-
-h = h_max   (top border)
-
-So for each VEAS line you must check both possible intersections and label whichever occurs first.
+Same color, but transparent
 
 
----
 
-🔹 Geometric Logic
+The clean, robust way in MATLAB is:
 
-Each VEAS curve can terminate at:
-
-Right boundary → Mach = 1
-
-Top boundary → h = h_max
+> 🔹 Construct the boundary as a single ordered polygon
+🔹 Use patch() (or fill()) with FaceAlpha
 
 
-We compute both candidates and use the physically valid one.
+
+This is the professional method.
 
 
 ---
 
-✅ Clean Solution
+✅ Core Principle
 
-After computing:
+MATLAB fills polygons, not implicit curve intersections.
 
-M_line = VEAS(i) ./ (a .* sqrt(rho./rho0));
+So the workflow is:
 
-Add this logic:
-
-M_max = 1;
-h_max = max(h_ft);
-
-% --- Intersection with right boundary (Mach = 1) ---
-diff_right = M_line - M_max;
-idx_right = find(diff_right(1:end-1).*diff_right(2:end) < 0,1);
-
-h_right = NaN;
-
-if ~isempty(idx_right)
-    h_right = interp1(diff_right(idx_right:idx_right+1), ...
-                      h_ft(idx_right:idx_right+1), 0);
-end
-
-% --- Intersection with top boundary (h = h_max) ---
-M_top = interp1(h_ft, M_line, h_max);
-
-% --- Decide which boundary is hit first ---
-if ~isnan(h_right)
-    % Check if right intersection is below top
-    if h_right <= h_max
-        text(1.01, h_right, sprintf('%d KEAS', VEAS_knots(i)), ...
-             'FontWeight','bold', ...
-             'VerticalAlignment','middle');
-    else
-        text(M_top, h_max+1000, sprintf('%d KEAS', VEAS_knots(i)), ...
-             'FontWeight','bold', ...
-             'HorizontalAlignment','center');
-    end
-else
-    % Only top intersection exists
-    text(M_top, h_max+1000, sprintf('%d KEAS', VEAS_knots(i)), ...
-         'FontWeight','bold', ...
-         'HorizontalAlignment','center');
-end
+1. Compute intersection points between adjacent curves
 
 
----
-
-✅ Problem 2 — Lines Extending Outside the Envelope
-
-Right now you plot:
-
-plot(M_line, h_ft)
-
-But for altitudes where M_line > 1, it extends outside your Mach limit.
-
-You must clip the curve:
-
-M_line(M_line > 1) = NaN;
-
-So change your plotting loop to:
-
-for i = 1:length(VEAS)
-
-    M_line = VEAS(i) ./ (a .* sqrt(rho./rho0));
-    
-    % Clip outside envelope
-    M_line(M_line > 1) = NaN;
-    
-    plot(M_line, h_ft, '--')
-end
-
-MATLAB automatically breaks the line at NaN.
-
-This is the correct professional way to clip curves.
+2. Trim each curve between the correct intersection limits
 
 
----
-
-🔎 Why This Fix Works
-
-Now each VEAS curve:
-
-Stops exactly at Mach = 1
-
-Or reaches the top boundary cleanly
-
-Gets labeled at whichever boundary it touches
+3. Concatenate the trimmed segments in consistent order
 
 
-No overflow. No missing labels.
+4. Pass them to patch()
 
-
----
-
-✈ Final Visual Polish
-
-To prevent text clipping:
-
-set(gca,'Clipping','off')
-ylim([0 h_max*1.05])
-xlim([0 1.05])
-
-
----
-
-Summary of What Was Missing
-
-Issue	Cause	Fix
-
-No top labels	Only checking Mach boundary	Also check h = h_max
-Lines overflow	Not clipping M > 1	Replace with NaN
-Text cut off	Axes clipping	Disable clipping
 
 
 
 ---
 
-If you want, I can now help you:
+🎯 Simple Conceptual Example
 
-Make labels rotate with slope of VEAS line
+Suppose you have 4 boundary curves:
 
-Format labels using LaTeX (e.g. $V_{EAS}$)
+Curve 1: bottom boundary
 
-Convert this into a reusable plotting function
+Curve 2: right boundary
+
+Curve 3: top boundary
+
+Curve 4: left boundary
 
 
-You're very close to a publication-grade flight envelope plot.
+Each defined as vectors:
+
+x1,y1
+x2,y2
+x3,y3
+x4,y4
+
+
+---
+
+✅ Step 1 — Compute Intersections
+
+Use:
+
+[xi, yi] = polyxpoly(x1,y1,x2,y2);
+
+polyxpoly is ideal for piecewise curve intersections.
+
+Repeat for all adjacent curve pairs.
+
+
+---
+
+✅ Step 2 — Trim Curves Between Intersections
+
+Suppose curve 1 runs from intersection A to B.
+
+You find indices:
+
+idxA = findClosestIndex(x1,y1, xiA, yiA);
+idxB = findClosestIndex(x1,y1, xiB, yiB);
+
+segment1_x = x1(idxA:idxB);
+segment1_y = y1(idxA:idxB);
+
+You must ensure consistent direction (clockwise or CCW).
+
+
+---
+
+✅ Step 3 — Build Polygon
+
+Concatenate in order:
+
+X_region = [segment1_x, segment2_x, segment3_x, segment4_x];
+Y_region = [segment1_y, segment2_y, segment3_y, segment4_y];
+
+
+---
+
+✅ Step 4 — Draw Border + Transparent Fill
+
+regionColor = [0 0.447 0.741];  % example blue
+
+patch(X_region, Y_region, regionColor, ...
+      'FaceAlpha',0.2, ...
+      'EdgeColor',regionColor, ...
+      'LineWidth',1.5);
+
+That’s it.
+
+FaceAlpha controls transparency
+
+EdgeColor matches border
+
+Clean and vectorized
+
+
+
+---
+
+🔬 More Advanced (Very Clean): Use polyshape
+
+If your curves intersect properly and form a closed region, MATLAB’s polyshape can simplify everything.
+
+Build polygon:
+
+pgon = polyshape(X_region, Y_region);
+
+Plot:
+
+plot(pgon, ...
+     'FaceColor', regionColor, ...
+     'FaceAlpha',0.2, ...
+     'EdgeColor', regionColor, ...
+     'LineWidth',1.5);
+
+Advantages:
+
+Automatically fixes self-intersections
+
+Computes area
+
+Supports boolean operations (union, intersect, subtract)
+
+
+
+---
+
+✈ For Flight Envelope Applications
+
+If your boundaries are things like:
+
+Stall line
+
+Mach limit
+
+Structural q-limit
+
+Thrust ceiling
+
+
+Then a very clean method is:
+
+1. Define a fine grid
+
+
+2. Compute logical mask of valid region
+
+
+3. Use contourf with one level
+
+
+
+Example:
+
+mask = (M <= 1) & (q <= q_limit) & (CL <= CLmax);
+
+contourf(M_grid, h_grid, mask, [1 1], ...
+         'FaceAlpha',0.2)
+
+This is extremely robust for aerodynamic envelopes.
+
+
+---
+
+⚠ Common Mistakes
+
+Problem	Cause
+
+Fill leaks outside	Boundary not closed
+Weird triangulation	Curve order inconsistent
+Self-crossing polygon	Intersections not trimmed correctly
+Jagged edges	Insufficient resolution
+
+
+
+---
+
+🧠 Practical Advice
+
+For 4 intersecting curves:
+
+Use polyxpoly
+
+Determine correct traversal order
+
+Concatenate segments
+
+Use patch
+
+
+That is the mathematically correct approach.
+
+
+---
+
+If you show me:
+
+What your 4 curves represent physically
+
+Whether they are functions  or parametric
+
+Whether intersections are known analytically
+
+
+I can give you a drop-in implementation tailored to your flight envelope model.
