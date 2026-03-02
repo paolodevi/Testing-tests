@@ -1,52 +1,170 @@
-clc; clear; close all;
+Good — now we’re dealing with two separate graphical issues:
 
-% Altitude grid
-h_ft = linspace(0,50000,1000);
-h_m  = h_ft * 0.3048;
+1. Some VEAS lines intersect the top boundary (h = h_max) but are not labeled
 
-% Atmosphere
-[T,a,~,rho] = atmosisa(h_m);
-rho0 = 1.225;
 
-% VEAS values (knots)
-VEAS_knots = [200 300 400];
-VEAS = VEAS_knots * 0.514444;  % m/s
+2. The VEAS curves extend outside the envelope (M > 1)
 
-% Compute VEAS at Mach 1
-VEAS_M1 = a .* sqrt(rho./rho0);
 
-figure; hold on; grid on;
 
-% Plot VEAS lines
+Both are geometric clipping problems. Let’s fix them cleanly.
+
+
+---
+
+✅ Problem 1 — Missing Labels at the Top Boundary
+
+Right now you are only checking intersection with:
+
+M = 1   (right border)
+
+But some VEAS lines instead intersect:
+
+h = h_max   (top border)
+
+So for each VEAS line you must check both possible intersections and label whichever occurs first.
+
+
+---
+
+🔹 Geometric Logic
+
+Each VEAS curve can terminate at:
+
+Right boundary → Mach = 1
+
+Top boundary → h = h_max
+
+
+We compute both candidates and use the physically valid one.
+
+
+---
+
+✅ Clean Solution
+
+After computing:
+
+M_line = VEAS(i) ./ (a .* sqrt(rho./rho0));
+
+Add this logic:
+
+M_max = 1;
+h_max = max(h_ft);
+
+% --- Intersection with right boundary (Mach = 1) ---
+diff_right = M_line - M_max;
+idx_right = find(diff_right(1:end-1).*diff_right(2:end) < 0,1);
+
+h_right = NaN;
+
+if ~isempty(idx_right)
+    h_right = interp1(diff_right(idx_right:idx_right+1), ...
+                      h_ft(idx_right:idx_right+1), 0);
+end
+
+% --- Intersection with top boundary (h = h_max) ---
+M_top = interp1(h_ft, M_line, h_max);
+
+% --- Decide which boundary is hit first ---
+if ~isnan(h_right)
+    % Check if right intersection is below top
+    if h_right <= h_max
+        text(1.01, h_right, sprintf('%d KEAS', VEAS_knots(i)), ...
+             'FontWeight','bold', ...
+             'VerticalAlignment','middle');
+    else
+        text(M_top, h_max+1000, sprintf('%d KEAS', VEAS_knots(i)), ...
+             'FontWeight','bold', ...
+             'HorizontalAlignment','center');
+    end
+else
+    % Only top intersection exists
+    text(M_top, h_max+1000, sprintf('%d KEAS', VEAS_knots(i)), ...
+         'FontWeight','bold', ...
+         'HorizontalAlignment','center');
+end
+
+
+---
+
+✅ Problem 2 — Lines Extending Outside the Envelope
+
+Right now you plot:
+
+plot(M_line, h_ft)
+
+But for altitudes where M_line > 1, it extends outside your Mach limit.
+
+You must clip the curve:
+
+M_line(M_line > 1) = NaN;
+
+So change your plotting loop to:
+
 for i = 1:length(VEAS)
+
     M_line = VEAS(i) ./ (a .* sqrt(rho./rho0));
+    
+    % Clip outside envelope
+    M_line(M_line > 1) = NaN;
+    
     plot(M_line, h_ft, '--')
 end
 
-% Vertical Mach limit
-plot([1 1],[0 max(h_ft)],'k','LineWidth',2)
+MATLAB automatically breaks the line at NaN.
 
-% ---- Label placement at Mach = 1 ----
-for i = 1:length(VEAS)
+This is the correct professional way to clip curves.
 
-    diff = VEAS_M1 - VEAS(i);
-    
-    idx = find(diff(1:end-1).*diff(2:end) < 0,1);
-    
-    if ~isempty(idx)
-        
-        % Linear interpolation for altitude
-        h_int = interp1(diff(idx:idx+1), h_ft(idx:idx+1), 0);
-        
-        text(1.01, h_int, ...
-             sprintf('%d KEAS', VEAS_knots(i)), ...
-             'FontWeight','bold', ...
-             'VerticalAlignment','middle');
-    end
-end
 
-xlim([0 1])
-xlabel('Mach')
-ylabel('Altitude (ft)')
-title('Envelope with Constant VEAS Lines (M_{max} = 1)')
+---
+
+🔎 Why This Fix Works
+
+Now each VEAS curve:
+
+Stops exactly at Mach = 1
+
+Or reaches the top boundary cleanly
+
+Gets labeled at whichever boundary it touches
+
+
+No overflow. No missing labels.
+
+
+---
+
+✈ Final Visual Polish
+
+To prevent text clipping:
+
 set(gca,'Clipping','off')
+ylim([0 h_max*1.05])
+xlim([0 1.05])
+
+
+---
+
+Summary of What Was Missing
+
+Issue	Cause	Fix
+
+No top labels	Only checking Mach boundary	Also check h = h_max
+Lines overflow	Not clipping M > 1	Replace with NaN
+Text cut off	Axes clipping	Disable clipping
+
+
+
+---
+
+If you want, I can now help you:
+
+Make labels rotate with slope of VEAS line
+
+Format labels using LaTeX (e.g. $V_{EAS}$)
+
+Convert this into a reusable plotting function
+
+
+You're very close to a publication-grade flight envelope plot.
