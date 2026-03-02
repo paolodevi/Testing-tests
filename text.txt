@@ -1,27 +1,52 @@
 clc; clear; close all;
 
-% Altitude vector (ft)
-h_ft = linspace(0,50000,500);
+% Altitude grid
+h_ft = linspace(0,50000,1000);
 h_m  = h_ft * 0.3048;
 
 % Atmosphere
-[T,a,P,rho] = atmosisa(h_m);
-rho0 = 1.225;  % Sea level density
+[T,a,~,rho] = atmosisa(h_m);
+rho0 = 1.225;
 
-% Constant VEAS lines (knots)
+% VEAS values (knots)
 VEAS_knots = [200 300 400];
-VEAS = VEAS_knots * 0.514444;  % convert to m/s
+VEAS = VEAS_knots * 0.514444;  % m/s
+
+% Compute VEAS at Mach 1
+VEAS_M1 = a .* sqrt(rho./rho0);
 
 figure; hold on; grid on;
 
+% Plot VEAS lines
 for i = 1:length(VEAS)
-    
-    M = VEAS(i) ./ (a .* sqrt(rho./rho0));
-    
-    plot(M, h_ft, 'LineWidth', 1.5)
+    M_line = VEAS(i) ./ (a .* sqrt(rho./rho0));
+    plot(M_line, h_ft, '--')
 end
 
+% Vertical Mach limit
+plot([1 1],[0 max(h_ft)],'k','LineWidth',2)
+
+% ---- Label placement at Mach = 1 ----
+for i = 1:length(VEAS)
+
+    diff = VEAS_M1 - VEAS(i);
+    
+    idx = find(diff(1:end-1).*diff(2:end) < 0,1);
+    
+    if ~isempty(idx)
+        
+        % Linear interpolation for altitude
+        h_int = interp1(diff(idx:idx+1), h_ft(idx:idx+1), 0);
+        
+        text(1.01, h_int, ...
+             sprintf('%d KEAS', VEAS_knots(i)), ...
+             'FontWeight','bold', ...
+             'VerticalAlignment','middle');
+    end
+end
+
+xlim([0 1])
 xlabel('Mach')
 ylabel('Altitude (ft)')
-legend("200 KEAS","300 KEAS","400 KEAS")
-title('Flight Envelope with Constant VEAS Lines')
+title('Envelope with Constant VEAS Lines (M_{max} = 1)')
+set(gca,'Clipping','off')
