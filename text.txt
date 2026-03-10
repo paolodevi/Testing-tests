@@ -1,242 +1,77 @@
-Good — now we’re in geometric region construction.
-
-You have:
-
-4 intersecting curves 
-
-They form a closed region
-
-You want:
-
-Border drawn
-
-Interior filled
-
-Same color, but transparent
-
-
-
-The clean, robust way in MATLAB is:
-
-> 🔹 Construct the boundary as a single ordered polygon
-🔹 Use patch() (or fill()) with FaceAlpha
-
-
-
-This is the professional method.
-
-
----
-
-✅ Core Principle
-
-MATLAB fills polygons, not implicit curve intersections.
-
-So the workflow is:
-
-1. Compute intersection points between adjacent curves
-
-
-2. Trim each curve between the correct intersection limits
-
-
-3. Concatenate the trimmed segments in consistent order
-
-
-4. Pass them to patch()
-
-
-
-
----
-
-🎯 Simple Conceptual Example
-
-Suppose you have 4 boundary curves:
-
-Curve 1: bottom boundary
-
-Curve 2: right boundary
-
-Curve 3: top boundary
-
-Curve 4: left boundary
-
-
-Each defined as vectors:
-
-x1,y1
-x2,y2
-x3,y3
-x4,y4
-
-
----
-
-✅ Step 1 — Compute Intersections
-
-Use:
-
-[xi, yi] = polyxpoly(x1,y1,x2,y2);
-
-polyxpoly is ideal for piecewise curve intersections.
-
-Repeat for all adjacent curve pairs.
-
-
----
-
-✅ Step 2 — Trim Curves Between Intersections
-
-Suppose curve 1 runs from intersection A to B.
-
-You find indices:
-
-idxA = findClosestIndex(x1,y1, xiA, yiA);
-idxB = findClosestIndex(x1,y1, xiB, yiB);
-
-segment1_x = x1(idxA:idxB);
-segment1_y = y1(idxA:idxB);
-
-You must ensure consistent direction (clockwise or CCW).
-
-
----
-
-✅ Step 3 — Build Polygon
-
-Concatenate in order:
-
-X_region = [segment1_x, segment2_x, segment3_x, segment4_x];
-Y_region = [segment1_y, segment2_y, segment3_y, segment4_y];
-
-
----
-
-✅ Step 4 — Draw Border + Transparent Fill
-
-regionColor = [0 0.447 0.741];  % example blue
-
-patch(X_region, Y_region, regionColor, ...
-      'FaceAlpha',0.2, ...
-      'EdgeColor',regionColor, ...
-      'LineWidth',1.5);
-
-That’s it.
-
-FaceAlpha controls transparency
-
-EdgeColor matches border
-
-Clean and vectorized
-
-
-
----
-
-🔬 More Advanced (Very Clean): Use polyshape
-
-If your curves intersect properly and form a closed region, MATLAB’s polyshape can simplify everything.
-
-Build polygon:
-
-pgon = polyshape(X_region, Y_region);
-
-Plot:
-
-plot(pgon, ...
-     'FaceColor', regionColor, ...
-     'FaceAlpha',0.2, ...
-     'EdgeColor', regionColor, ...
-     'LineWidth',1.5);
-
-Advantages:
-
-Automatically fixes self-intersections
-
-Computes area
-
-Supports boolean operations (union, intersect, subtract)
-
-
-
----
-
-✈ For Flight Envelope Applications
-
-If your boundaries are things like:
-
-Stall line
-
-Mach limit
-
-Structural q-limit
-
-Thrust ceiling
-
-
-Then a very clean method is:
-
-1. Define a fine grid
-
-
-2. Compute logical mask of valid region
-
-
-3. Use contourf with one level
-
-
-
-Example:
-
-mask = (M <= 1) & (q <= q_limit) & (CL <= CLmax);
-
-contourf(M_grid, h_grid, mask, [1 1], ...
-         'FaceAlpha',0.2)
-
-This is extremely robust for aerodynamic envelopes.
-
-
----
-
-⚠ Common Mistakes
-
-Problem	Cause
-
-Fill leaks outside	Boundary not closed
-Weird triangulation	Curve order inconsistent
-Self-crossing polygon	Intersections not trimmed correctly
-Jagged edges	Insufficient resolution
-
-
-
----
-
-🧠 Practical Advice
-
-For 4 intersecting curves:
-
-Use polyxpoly
-
-Determine correct traversal order
-
-Concatenate segments
-
-Use patch
-
-
-That is the mathematically correct approach.
-
-
----
-
-If you show me:
-
-What your 4 curves represent physically
-
-Whether they are functions  or parametric
-
-Whether intersections are known analytically
-
-
-I can give you a drop-in implementation tailored to your flight envelope model.
+function S = importTextData(filepath, headerLine)
+% IMPORTTEXTDATA Import column data from a text file with a header
+%
+% S = importTextData(filepath, headerLine)
+%
+% Inputs
+% filepath   : path to the text file
+% headerLine : line number where the header (#...) is located
+%
+% Output
+% S : struct with fields named after variables in the header
+
+%% Read file lines
+fid = fopen(filepath,'r');
+assert(fid ~= -1, 'Cannot open file');
+
+lines = {};
+while ~feof(fid)
+    lines{end+1} = fgetl(fid);
+end
+fclose(fid);
+
+%% Extract header
+header = strtrim(lines{headerLine});
+header = regexprep(header,'^#',''); % remove #
+
+% Split variables
+vars = strsplit(header,';');
+
+nVar = numel(vars);
+varNames = cell(1,nVar);
+
+for i = 1:nVar
+    
+    % Remove units in []
+    name = regexprep(vars{i},'\[.*?\]','');
+    
+    % Clean spaces
+    name = strtrim(name);
+    
+    % Convert to valid MATLAB name
+    name = matlab.lang.makeValidName(name);
+    
+    varNames{i} = name;
+    
+end
+
+%% Detect delimiter from first data line
+dataStart = headerLine + 1;
+
+while dataStart <= numel(lines) && isempty(strtrim(lines{dataStart}))
+    dataStart = dataStart + 1;
+end
+
+sampleLine = lines{dataStart};
+
+if contains(sampleLine,';')
+    delimiter = ';';
+else
+    delimiter = 'whitespace';
+end
+
+%% Read numeric data
+if strcmp(delimiter,';')
+    data = readmatrix(filepath,'Delimiter',';','NumHeaderLines',headerLine);
+else
+    data = readmatrix(filepath,'NumHeaderLines',headerLine);
+end
+
+%% Store in struct
+S = struct;
+
+for i = 1:nVar
+    S.(varNames{i}) = data(:,i);
+end
+
+end
