@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>5K Hybrid Trainer (May 9, 2026)</title>
+<style>
+  :root{
+    --bg:#ffffff; --card:#f8fbff; --muted:#6b7280;
+    --accent:#0b63b5; --run:#b7e4c7; --gym:#fde9c8; --long:#cfe8ff; --race:#f7c6d9;
+    --ok:#10b981;
+    font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:#0b1220;line-height:1.4}
+  header{background:linear-gradient(90deg,var(--accent),#0b5ea0);color:#fff;padding:18px 16px}
+  header h1{margin:0;font-size:20px}
+  header p{margin:6px 0 0;font-size:13px;opacity:0.95}
+  main{padding:14px}
+  .meta{display:flex;gap:12px;align-items:center;margin:12px 0 18px}
+  .meta .chip{background:#fff;border-radius:10px;padding:8px 10px;font-size:13px;color:var(--muted);box-shadow:0 1px 4px rgba(11,19,35,0.06)}
+  .controls{display:flex;gap:8px;margin-left:auto}
+  .btn{background:rgba(255,255,255,0.12);color:#fff;padding:8px 10px;border-radius:8px;border:0;font-weight:600}
+  .card{background:var(--card);border-radius:12px;padding:12px;margin-bottom:14px;box-shadow:0 4px 14px rgba(11,19,35,0.05)}
+  .small{font-size:13px;color:var(--muted)}
+  .grid-week{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+  .day{min-height:78px;border-radius:8px;padding:8px;font-size:13px;background:#fff;border:1px solid #eee;display:flex;flex-direction:column;justify-content:space-between}
+  .day .dow{font-weight:700;font-size:12px}
+  .badge{display:inline-block;padding:4px 6px;border-radius:6px;font-size:11px}
+  .run{background:var(--run);border-left:4px solid #4caf50}
+  .gym{background:var(--gym);border-left:4px solid #d97706}
+  .long{background:var(--long);border-left:4px solid #0b63b5}
+  .rest{background:#f0f5f9;border-left:4px solid #94a3b8}
+  .race{background:var(--race);border-left:4px solid #db2777}
+  .day .title{font-weight:600;margin-bottom:6px}
+  .day .meta2{display:flex;align-items:center;justify-content:space-between}
+  .checkbox{display:flex;gap:8px;align-items:center}
+  input[type="checkbox"]{width:18px;height:18px}
+  footer{padding:12px 16px;font-size:13px;color:var(--muted);display:flex;gap:10px;align-items:center;justify-content:space-between}
+  .prog{height:12px;background:#e6eefb;border-radius:10px;overflow:hidden}
+  .prog > i{display:block;height:100%;background:linear-gradient(90deg,#34d399,#10b981)}
+  .big{font-size:18px;font-weight:700}
+  .entity{font-size:13px;color:#0b63b5;font-weight:700}
+  .details{position:fixed;left:12px;right:12px;bottom:12px;background:#fff;border-radius:12px;padding:12px;box-shadow:0 20px 40px rgba(2,6,23,0.18);max-height:72vh;overflow:auto;display:none;z-index:30}
+  .details h3{margin:0 0 8px}
+  .close{background:#f3f4f6;border:0;padding:8px 10px;border-radius:8px}
+  .print-only{display:none}
+  .top-row{display:flex;gap:8px;align-items:center}
+  .btn-light{background:#eef2ff;color:var(--accent);border-radius:8px;padding:8px 10px;border:0;font-weight:600}
+  @media print{
+    header,footer,.controls{display:none}
+    .details{display:none !important}
+    .print-only{display:block}
+    body{padding:10mm}
+  }
+  /* responsive for phones */
+  @media (max-width:520px){
+    .day{min-height:86px;font-size:12px}
+    header h1{font-size:18px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;align-items:center;gap:12px">
+    <div>
+      <h1>5K Hybrid Trainer</h1>
+      <p>Start: <strong id="startDateLabel">2026-03-17</strong> • Race: <strong id="raceDateLabel">2026-05-09</strong></p>
+    </div>
+    <div class="controls" style="margin-left:auto">
+      <button class="btn" id="printBtn">Print</button>
+      <button class="btn" id="resetBtn">Reset</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div>
+        <div class="small">Training duration</div>
+        <div class="big" id="durationText">7w + 4d</div>
+      </div>
+      <div style="margin-left:8px">
+        <div class="small">Weekly progress</div>
+        <div style="width:200px"><div class="prog"><i id="progFill" style="width:0%"></i></div></div>
+      </div>
+      <div style="margin-left:auto;text-align:right">
+        <div class="small">Plan</div>
+        <div class="entity">3 runs • 3 gym sessions • 1 rest</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <h2 style="margin:0 0 6px">Week-by-week calendar</h2>
+        <div class="small">Tap any day for details. Check the box when complete.</div>
+      </div>
+      <div>
+        <button class="btn-light" id="gotoToday">Go to today</button>
+      </div>
+    </div>
+
+    <div id="calendarContainer" style="margin-top:12px"></div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0">Plan summary</h3>
+    <ul class="small">
+      <li>Easy runs: conversational pace. Intervals: controlled hard efforts. Long runs increase weekly.</li>
+      <li>Leg day remains high-intensity on Sundays; long run is Saturday to manage fatigue.</li>
+      <li>Warm-up: 5 min walk, leg swings, ankle circles, light jog. Post-run: hamstrings, calves, hip flexor stretch.</li>
+    </ul>
+    <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn-light" id="showGear">Gear list</button>
+      <button class="btn-light" id="showGym">Gym templates</button>
+    </div>
+  </section>
+
+  <div class="details" id="detailsPanel" aria-hidden="true">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <h3 id="detailsTitle">Workout details</h3>
+      <div><button class="close" id="closeDetails">Close</button></div>
+    </div>
+    <div id="detailsBody" style="font-size:14px;color:#0b1220"></div>
+  </div>
+</main>
+
+<footer>
+  <div class="small">Tip: Add to home screen for a quick app-like experience</div>
+  <div style="width:40%">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="width:40px;height:40px;border-radius:10px;background:#eef9f3;display:flex;align-items:center;justify-content:center;color:var(--ok)">🏃</div>
+      <div>
+        <div class="small">Completed this week</div>
+        <div id="weekComplete" style="font-weight:700">0 / 0</div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+/* --- configuration / plan templates --- */
+const START_DATE = new Date(2026, 2, 17); // Months: 0-based (Mar = 2)
+const RACE_DATE  = new Date(2026, 4, 9);  // May = 4
+
+document.getElementById('startDateLabel').textContent = START_DATE.toISOString().slice(0,10);
+document.getElementById('raceDateLabel').textContent  = RACE_DATE.toISOString().slice(0,10);
+
+// Weekly templates (Mon..Sun)
+const weeklyTemplate = {
+  1: ["Run-walk 1/2 ×8", "Chest / Biceps / Triceps", "Run-walk 1.5/2 ×7", "Rest / Mobility", "Back", "Long run 2/2 ×8", "Legs (high intensity)"],
+  2: ["Run-walk 2/2 ×7", "Chest / Biceps / Triceps", "Run-walk 3/2 ×6", "Rest / Mobility", "Back", "Long run 3/2 ×6", "Legs (high intensity)"],
+  3: ["4/2 ×5", "Chest / Biceps / Triceps", "5/2 ×5", "Rest / Mobility", "Back", "Long run 6/2 ×4", "Legs (high intensity)"],
+  4: ["8 min ×2", "Chest / Biceps / Triceps", "10 min continuous", "Rest / Mobility", "Back", "15 min continuous", "Legs (high intensity)"],
+  5: ["15 min easy", "Chest / Biceps / Triceps", "10 min + intervals", "Rest / Mobility", "Back", "20 min easy", "Legs (high intensity)"],
+  6: ["18 min easy", "Chest / Biceps / Triceps", "12 min + intervals", "Rest / Mobility", "Back", "25 min easy", "Legs (high intensity)"],
+  7: ["20 min easy", "Chest / Biceps / Triceps", "Speed intervals", "Rest / Mobility", "Back", "5 km practice", "Legs (high intensity)"],
+  8: ["15 min easy", "Chest / Biceps / Triceps", "12 min easy", "Rest / Mobility", "Back (lighter)", "8 min jog", "Race Day"]
+};
+
+// colors by type detection
+function dayClassFor(text){
+  const t = text.toLowerCase();
+  if(t.includes("race")) return "race";
+  if(t.includes("long") || t.includes("5 km") || t.includes("km")) return "long";
+  if(t.includes("rest")) return "rest";
+  if(t.includes("chest") || t.includes("back") || t.includes("legs") || t.includes("biceps") || t.includes("triceps")) return "gym";
+  return "run";
+}
+
+/* --- helpers --- */
+function daysBetween(a,b){ return Math.round((b - a)/(1000*60*60*24)); }
+function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
+function formatD(d){ return d.toISOString().slice(0,10); }
+function isoKey(d){ return formatD(d); }
+
+/* --- generate schedule from start to race --- */
+const totalDays = daysBetween(START_DATE, RACE_DATE);
+const totalWeeks = Math.ceil((totalDays+1)/7);
+const schedule = {}; // dateString -> {date, dayOfWeek, weekIndex, text}
+
+for(let i=0;i<=totalDays;i++){
+  const current = addDays(START_DATE, i);
+  const dayOfWeek = (current.getDay()+6)%7; // shift: Monday=0 ... Sunday=6
+  let weekIndex = Math.floor(i/7)+1;
+  if(weekIndex>8) weekIndex = 8; // cap to 8 template weeks (last week will be truncated to race date)
+  const planText = weeklyTemplate[weekIndex][dayOfWeek];
+  schedule[isoKey(current)] = {
+    date: current,
+    dow: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][dayOfWeek],
+    weekIndex,
+    text: planText
+  };
+}
+
+/* --- persistence keys --- */
+const STORAGE_KEY = "5k_hybrid_progress_v1";
+
+/* --- render calendar (show full date range, grouped by week) --- */
+const container = document.getElementById('calendarContainer');
+
+function renderCalendar(scrollToToday=true){
+  container.innerHTML = "";
+  let dates = Object.keys(schedule).sort();
+  // group into weeks (Mon..Sun visual)
+  let weekStart = START_DATE;
+  while(daysBetween(weekStart, RACE_DATE) >= 0){
+    // week wrapper
+    const weekCard = document.createElement('div');
+    weekCard.className = "card";
+    const weekNumber = Math.floor(daysBetween(START_DATE, weekStart)/7) + 1;
+    const weekTitle = document.createElement('div');
+    weekTitle.style.display = "flex"; weekTitle.style.justifyContent="space-between";
+    weekTitle.innerHTML = `<strong>Week ${weekNumber}</strong><div class="small">Mon ${formatD(weekStart)} → Sun ${formatD(addDays(weekStart,6))}</div>`;
+    weekCard.appendChild(weekTitle);
+
+    const grid = document.createElement('div');
+    grid.className = "grid-week";
+    for(let d=0; d<7; d++){
+      const dayDate = addDays(weekStart,d);
+      const iso = formatD(dayDate);
+      const cell = document.createElement('div');
+      cell.className = "day";
+      if(schedule[iso]){
+        const item = schedule[iso];
+        const cls = dayClassFor(item.text);
+        cell.classList.add(cls);
+
+        cell.innerHTML = `
+          <div class="dow">${item.dow} • <small class="small">${iso}</small></div>
+          <div>
+            <div class="title">${item.text}</div>
+            <div class="meta2">
+              <div class="small">${cls.toUpperCase()}</div>
+              <label class="checkbox"><input data-date="${iso}" type="checkbox" ${isDone(iso)?'checked':''} /> Done</label>
+            </div>
+          </div>`;
+        // click shows details
+        cell.addEventListener('click', (ev)=>{
+          if(ev.target.tagName === 'INPUT') return;
+          showDetails(iso);
+        });
+      } else {
+        // outside range (before start or after race) - blank gray
+        cell.classList.add('rest');
+        cell.innerHTML = `<div class="dow">${["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][d]}</div><div class="small">—</div>`;
+      }
+      grid.appendChild(cell);
+    }
+    weekCard.appendChild(grid);
+    container.appendChild(weekCard);
+    weekStart = addDays(weekStart,7);
+  }
+
+  // attach checkbox listeners (delegated)
+  container.querySelectorAll('input[type="checkbox"]').forEach(cb=>{
+    cb.addEventListener('change', ()=>{ setDone(cb.dataset.date, cb.checked); updateProgress(); });
+  });
+
+  if(scrollToToday) scrollToDate(new Date());
+}
+
+/* --- details panel content --- */
+const panel = document.getElementById('detailsPanel');
+const detailsTitle = document.getElementById('detailsTitle');
+const detailsBody = document.getElementById('detailsBody');
+const closeDetails = document.getElementById('closeDetails');
+
+function showDetails(iso){
+  const item = schedule[iso];
+  if(!item) return;
+  detailsTitle.textContent = `${item.dow} • ${iso}`;
+  detailsBody.innerHTML = `<strong>${item.text}</strong>
+    <p class="small" style="margin-top:8px">Type: <em>${dayClassFor(item.text).toUpperCase()}</em></p>
+    <hr/>
+    <div class="small">
+      <p><strong>Notes & suggestions</strong></p>
+      ${notesFor(item.text)}
+    </div>
+    <div style="margin-top:12px">
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-date="${iso}" ${isDone(iso)?'checked':''}/> Mark as completed</label>
+    </div>`;
+  panel.style.display = 'block';
+  panel.setAttribute('aria-hidden','false');
+
+  // checkbox inside details
+  panel.querySelector('input[type="checkbox"]').addEventListener('change', (e)=>{ setDone(iso, e.target.checked); renderCalendar(false); updateProgress(); });
+}
+
+closeDetails.addEventListener('click', ()=>{ panel.style.display='none'; panel.setAttribute('aria-hidden','true'); });
+
+function notesFor(text){
+  // simple contextual help
+  const t = text.toLowerCase();
+  if(t.includes('run-walk') || t.includes('run /')){
+    return `<p>Run-walk intervals: follow the on/off pattern listed. Keep pace conversational on run segments. Walk briskly on recovery.</p>`;
+  }
+  if(t.includes('long')){
+    return `<p>Long run: slow steady effort. Focus on duration rather than pace. Walk if needed.</p>`;
+  }
+  if(t.includes('speed') || t.includes('interval')){
+    return `<p>Intervals: warm-up 8–10 min, then do the faster reps with controlled recovery. Cool down 5–8 min.</p>`;
+  }
+  if(t.includes('race')){
+    return `<p>Race day: start slightly slower than training pace for first km, then settle in. Warm-up 8–10 min before the start.</p>`;
+  }
+  if(t.includes('legs')){
+    return `<p>Leg day (your high-intensity day): keep your normal intensity but avoid trying a new max before race week. Prioritise form and bracing.</p>`;
+  }
+  if(t.includes('chest') || t.includes('back')){
+    return `<p>Strength work: keep your gym sessions as usual. Avoid extreme new loads in the final 7 days before race day.</p>`;
+  }
+  return `<p>Standard session—progress gradually and prioritise recovery.</p>`;
+}
+
+/* --- simple storage of completed items --- */
+function loadProgress(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch(e){ return {}; }
+}
+function saveProgress(obj){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
+}
+function isDone(iso){
+  const p = loadProgress();
+  return p[iso] === true;
+}
+function setDone(iso, val){
+  const p = loadProgress();
+  p[iso] = !!val;
+  saveProgress(p);
+}
+
+/* --- progress UI --- */
+function updateProgress(){
+  // compute this week's items and completions
+  const today = new Date();
+  const weekIso = formatD(addDays(today, -( (today.getDay()+6)%7 )));
+  let weekCount = 0, doneCount = 0;
+  for(let d=0; d<7; d++){
+    const iso = formatD(addDays(addDays(today, -( (today.getDay()+6)%7 )), d));
+    if(schedule[iso]) {
+      // count scheduled sessions (non-rest entries)
+      const txt = schedule[iso].text.toLowerCase();
+      if(!txt.includes('rest')){
+        weekCount++;
+        if(isDone(iso)) doneCount++;
+      }
+    }
+  }
+  const percent = weekCount === 0 ? 0 : Math.round((doneCount/weekCount)*100);
+  document.getElementById('progFill').style.width = percent + '%';
+  document.getElementById('weekComplete').textContent = `${doneCount} / ${weekCount}`;
+}
+
+/* --- actions --- */
+document.getElementById('printBtn').addEventListener('click', ()=>{ window.print(); });
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  if(confirm('Clear all completion ticks?')){ localStorage.removeItem(STORAGE_KEY); renderCalendar(false); updateProgress(); }
+});
+document.getElementById('gotoToday').addEventListener('click', ()=>{ scrollToDate(new Date()); });
+document.getElementById('showGear').addEventListener('click', ()=>{
+  panel.style.display='block';
+  panel.setAttribute('aria-hidden','false');
+  detailsTitle.textContent = "Essential Running Gear";
+  detailsBody.innerHTML = `<ul>
+    <li><strong>Running shoes</strong> – neutral, cushioned trainers. Try in the afternoon for correct fit.</li>
+    <li><strong>Socks</strong> – synthetic, blister-resistant.</li>
+    <li><strong>Shorts / top</strong> – wicking material.</li>
+    <li>Optional: watch, hydration, anti-chafe balm.</li>
+  </ul>`;
+});
+document.getElementById('showGym').addEventListener('click', ()=>{
+  panel.style.display='block';
+  panel.setAttribute('aria-hidden','false');
+  detailsTitle.textContent = "Gym templates";
+  detailsBody.innerHTML = `<h4>Chest / Biceps / Triceps</h4><ul>
+    <li>Bench Press 4x, Incline DB 3x, Cable Fly 3x, Curls/Skullcrushers 3x each</li>
+  </ul>
+  <h4>Back</h4><ul><li>Pull-ups / Rows / Face pulls</li></ul>
+  <h4>Legs (high intensity)</h4><ul><li>Squat 4x, RDL 3x, Leg press 3x, ham curl, calf raises</li></ul>`;
+});
+
+/* --- initial render & helpers --- */
+function scrollToDate(dt){
+  // find the card containing the date and scroll it into view
+  const iso = formatD(dt);
+  const input = document.querySelector(`input[data-date="${iso}"]`);
+  if(input){
+    input.scrollIntoView({behavior:'smooth', block:'center'});
+    input.parentElement.parentElement.scrollIntoView({behavior:'smooth', block:'center'});
+  } else {
+    // if today not in schedule, go to start
+    container.scrollIntoView({behavior:'smooth', block:'start'});
+  }
+}
+
+renderCalendar(true);
+updateProgress();
+
+/* --- attach global click to hide panel when clicking outside --- */
+document.addEventListener('click', (e)=>{
+  if(panel.style.display === 'block' && !panel.contains(e.target) && !e.target.closest('.day')){
+    //panel.style.display='none';
+  }
+});
+
+/* --- small UX: focus today on load --- */
+window.addEventListener('load', ()=>{ setTimeout(()=>scrollToDate(new Date()),400); });
+
+</script>
+</body>
+</html>
