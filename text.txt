@@ -1,77 +1,618 @@
-function S = importTextData(filepath, headerLine)
-% IMPORTTEXTDATA Import column data from a text file with a header
-%
-% S = importTextData(filepath, headerLine)
-%
-% Inputs
-% filepath   : path to the text file
-% headerLine : line number where the header (#...) is located
-%
-% Output
-% S : struct with fields named after variables in the header
+Here is a structured, technically focused plan for a 2-hour internal “learning-by-training” lecture tailored to a Structural Dynamics & Aeroelasticity team, with emphasis on DLM ↔ structural grid coupling, splining, and patching. I’ll keep it pragmatic: what matters, what is done, how it’s used, and limitations at each step.
 
-%% Read file lines
-fid = fopen(filepath,'r');
-assert(fid ~= -1, 'Cannot open file');
 
-lines = {};
-while ~feof(fid)
-    lines{end+1} = fgetl(fid);
-end
-fclose(fid);
+---
 
-%% Extract header
-header = strtrim(lines{headerLine});
-header = regexprep(header,'^#',''); % remove #
+0. Framing the Lecture (5–10 min)
 
-% Split variables
-vars = strsplit(header,';');
+Objective
 
-nVar = numel(vars);
-varNames = cell(1,nVar);
+Align everyone on why coupling fidelity matters in aeroelastic workflows.
 
-for i = 1:nVar
-    
-    % Remove units in []
-    name = regexprep(vars{i},'\[.*?\]','');
-    
-    % Clean spaces
-    name = strtrim(name);
-    
-    % Convert to valid MATLAB name
-    name = matlab.lang.makeValidName(name);
-    
-    varNames{i} = name;
-    
-end
+Key message
 
-%% Detect delimiter from first data line
-dataStart = headerLine + 1;
+> “All aeroelastic predictions are only as good as the load/displacement transfer between aerodynamic and structural models.”
 
-while dataStart <= numel(lines) && isempty(strtrim(lines{dataStart}))
-    dataStart = dataStart + 1;
-end
 
-sampleLine = lines{dataStart};
 
-if contains(sampleLine,';')
-    delimiter = ';';
-else
-    delimiter = 'whitespace';
-end
+Focus points
 
-%% Read numeric data
-if strcmp(delimiter,';')
-    data = readmatrix(filepath,'Delimiter',';','NumHeaderLines',headerLine);
-else
-    data = readmatrix(filepath,'NumHeaderLines',headerLine);
-end
+Disconnect between:
 
-%% Store in struct
-S = struct;
+Aerodynamic mesh (panel-based, coarse, lifting surfaces)
 
-for i = 1:nVar
-    S.(varNames{i}) = data(:,i);
-end
+Structural mesh (FEM, detailed, 3D)
 
-end
+
+Coupling = energy-consistent mapping problem
+
+
+
+---
+
+1. Big Picture Workflow (10–15 min)
+
+Show the full loop
+
+1. Aerodynamic model (DLM panels)
+
+
+2. Structural model (FEM grid)
+
+
+3. Coupling (splines / interpolation)
+
+
+4. Aeroelastic solution (flutter, response, loads)
+
+
+5. Back-transfer (loads → structure, deformation → aero)
+
+
+
+Emphasize
+
+Bidirectional mapping:
+
+Displacements → aerodynamic grid
+
+Forces → structural grid
+
+
+
+What to stress
+
+Conservation principles:
+
+Work/energy consistency
+
+Force/moment equilibrium
+
+
+
+
+---
+
+2. The Aerodynamic Side: DLM (20 min)
+
+What to explain
+
+Basics of the Doublet Lattice Method (DLM)
+
+Frequency-domain, linear potential flow
+
+Panel discretization (CAERO-type thinking)
+
+Produces:
+
+Aerodynamic influence coefficients (AIC)
+
+Generalized aerodynamic forces (GAF)
+
+
+
+
+What matters for coupling
+
+Aerodynamic grid = control points + panels
+
+Degrees of freedom:
+
+Typically vertical displacement + rotations (depending on formulation)
+
+
+
+Limitations
+
+Linear theory (small perturbations)
+
+Inviscid, no separation
+
+Frequency-domain → no strong nonlinearities
+
+Grid is not physical structure
+
+
+What to study
+
+Roger’s approximation (for time-domain conversion)
+
+Classic references:
+
+Albano & Rodden (1969) – original DLM formulation
+
+Rodden’s MSC Nastran aeroelastic theory manual
+
+
+
+
+---
+
+3. Structural Model (FEM Grid) (15 min)
+
+What to explain
+
+FEM representation:
+
+Nodes, elements, DOFs (6 DOF typical)
+
+
+Modal reduction:
+
+Use of mode shapes in aeroelasticity
+
+
+
+What matters for coupling
+
+Structural grid is:
+
+Dense
+
+Physically meaningful
+
+
+Often reduced:
+
+Modal coordinates vs physical DOFs
+
+
+
+Limitations
+
+Modal truncation
+
+Poor representation of local flexibility if modes are insufficient
+
+
+What to study
+
+Modal participation in aeroelastic coupling
+
+Guyan reduction vs modal reduction
+
+
+
+---
+
+4. The Core Problem: Grid Mismatch (10–15 min)
+
+This is the conceptual heart of the lecture
+
+Problem
+
+Aerodynamic mesh ≠ Structural mesh
+
+
+Need
+
+Two operators:
+
+Interpolation (structure → aero)
+
+Load transfer (aero → structure)
+
+
+Key requirement
+
+Reciprocity / energy conservation
+
+
+
+---
+
+5. Splining Methods (35–40 min)  ← Main Technical Block
+
+Break this into sub-parts:
+
+
+---
+
+5.1 What is Splining?
+
+Definition
+
+A mapping:
+
+
+
+
+
+
+Key concept
+
+Same operator ensures:
+
+Work conservation:
+
+
+
+
+
+---
+
+5.2 Common Spline Types
+
+(A) Surface Splines (Thin Plate Splines / Beam Splines)
+
+Characteristics
+
+Smooth interpolation
+
+Based on minimizing strain energy
+
+
+Use case
+
+Wings, smooth lifting surfaces
+
+
+Limitations
+
+Can oversmooth
+
+Poor for discontinuities (control surfaces, hinges)
+
+
+
+---
+
+(B) RBE-based Methods (Rigid Links)
+
+Characteristics
+
+RBE2 / RBE3-like behavior
+
+Discrete coupling
+
+
+Use case
+
+Local attachments
+
+Control surface hinges
+
+
+Limitations
+
+RBE2: overly stiff
+
+RBE3: load distribution issues
+
+
+
+---
+
+(C) Finite Plate Splines (FPS)
+
+Characteristics
+
+Standard in many aeroelastic solvers
+
+Balance between smoothness and locality
+
+
+Strength
+
+Industry standard for DLM coupling
+
+
+
+---
+
+(D) Beam Splines
+
+Use case
+
+Slender structures (wings, tails)
+
+
+
+---
+
+5.3 What to Emphasize
+
+Trade-offs:
+
+Smoothness vs locality
+
+Accuracy vs robustness
+
+
+Influence radius / patch definition
+
+Conditioning of spline matrix
+
+
+
+---
+
+5.4 Limitations of Splining
+
+Extrapolation errors (outside convex hull)
+
+Sensitivity to:
+
+Grid density mismatch
+
+Poor node placement
+
+
+Numerical conditioning
+
+Non-physical deformation shapes
+
+
+
+---
+
+5.5 What to Study
+
+MSC Nastran:
+
+SPLINE1, SPLINE2, SPLINE4 entries
+
+
+Key topics:
+
+Radial basis functions (RBF)
+
+Thin plate spline theory
+
+
+Papers:
+
+Harder & Desmarais (1972) – spline interpolation in aeroelasticity
+
+Modern RBF coupling methods in CFD–CSM coupling
+
+
+
+
+---
+
+6. Patching Methods (15–20 min)
+
+What is patching?
+
+Instead of global splines:
+
+Divide domain into local patches
+
+Apply interpolation locally
+
+
+
+---
+
+Why use patching?
+
+Better handling of:
+
+Complex geometries
+
+Discontinuities
+
+Control surfaces
+
+
+
+
+---
+
+Techniques
+
+Substructuring
+
+Local spline regions
+
+Mortar methods (advanced)
+
+
+
+---
+
+Limitations
+
+Interface inconsistencies
+
+Patch boundary artifacts
+
+Requires manual setup
+
+
+
+---
+
+What to study
+
+Domain decomposition methods
+
+Mortar FEM coupling (for advanced understanding)
+
+Industrial practices (Airbus/Boeing style workflows if accessible internally)
+
+
+
+---
+
+7. Practical Usage (15–20 min)
+
+How to use in real workflows
+
+Walk through a typical setup:
+
+1. Define aerodynamic panels (CAERO)
+
+
+2. Define structural nodes (GRID)
+
+
+3. Define spline:
+
+Select method
+
+Define influence region
+
+
+
+4. Validate:
+
+Rigid body motion test
+
+Unit displacement test
+
+
+
+5. Run aeroelastic solution
+
+
+
+
+---
+
+Validation checks (very important)
+
+Rigid body modes:
+
+No artificial loads
+
+
+Symmetry preservation
+
+Load balance:
+
+Total forces and moments match
+
+
+
+
+---
+
+8. What We Want From It (10 min)
+
+Key performance criteria
+
+Accuracy
+
+Stability (numerical robustness)
+
+Energy conservation
+
+Physical realism
+
+
+
+---
+
+Common failure modes
+
+Spurious stiffening/softening
+
+Non-physical mode shapes
+
+Flutter prediction errors
+
+
+
+---
+
+9. Wrap-Up + Discussion (10 min)
+
+Suggested discussion prompts
+
+When do we trust a spline?
+
+How dense should the aero grid be?
+
+Modal vs physical coupling—when to use what?
+
+
+
+---
+
+Where You Should Put Extra Focus
+
+Given your audience, prioritize:
+
+1. Energy consistency (critical)
+
+This is often poorly understood but fundamental.
+
+2. Comparison of spline methods
+
+Not just “what exists” but:
+
+When to use each
+
+Failure cases
+
+
+3. Validation strategies
+
+Engineers remember checks, not theory.
+
+4. Practical pitfalls
+
+Real-world issues > textbook explanations
+
+
+---
+
+Suggested Study Material (Curated)
+
+Core Aeroelasticity
+
+Rodden & Johnson – MSC Nastran Aeroelastic Analysis User’s Guide
+
+Bisplinghoff, Ashley – Aeroelasticity
+
+
+Splining / Coupling
+
+Harder & Desmarais (1972) – Interpolation using surface splines
+
+Wendland – Scattered Data Approximation (RBF theory)
+
+
+Practical / Industrial
+
+Nastran Quick Reference Guide (SPLINE entries)
+
+Siemens Simcenter documentation on aeroelastic coupling
+
+
+Advanced (if you want depth)
+
+Farhat et al. – CFD/CSM coupling methods
+
+Mortar methods in FEM coupling
+
+
+
+---
+
+Optional Add-On (if time allows)
+
+Live demo idea
+
+Show:
+
+Poor spline vs good spline
+
+Effect on mode shapes or flutter speed
+
+
+
+This is extremely impactful for learning-by-training.
+
+
+---
+
+If you want, I can:
+
+Turn this into slides (structured deck)
+
+Provide figures/diagrams (very useful for this topic)
+
+Or create a hands-on exercise for your team (highly recommended for this format)
