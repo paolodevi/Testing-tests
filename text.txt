@@ -1,44 +1,40 @@
 function txt = conm2_card(data)
-% data: vector with 13 entries:
-% [EID, G, CID, M, X1, X2, X3, I11, I21, I22, I31, I32, I33]
+% data: [EID, G, CID, M, X1, X2, X3, I11, I21, I22, I31, I32, I33]
 
     if numel(data) ~= 13
         error('Input must have 13 elements');
     end
 
-    % helper for formatting one field (8 chars)
-    function f = fmt(val)
+    % Preallocate fields
+    f = cell(1,13);
+
+    for i = 1:13
+        val = data(i);
+
         if isnan(val)
-            f = '        '; % 8 spaces
+            f{i} = '        '; % 8 spaces
         else
-            % adjust precision as needed
-            f = sprintf('%8.4g', val);
+            if i <= 7
+                % First line → fixed point
+                f{i} = sprintf('%8.2f', val);
+            else
+                % Second line → exponential
+                f{i} = sprintf('%8.2E', val);
+            end
         end
     end
 
-    % first line
+    % First line
     line1 = [ ...
         sprintf('%-8s','CONM2'), ...
-        fmt(data(1)), ...
-        fmt(data(2)), ...
-        fmt(data(3)), ...
-        fmt(data(4)), ...
-        fmt(data(5)), ...
-        fmt(data(6)), ...
-        fmt(data(7)), ...
-        '        ', ...
-        '        '];
+        f{1}, f{2}, f{3}, f{4}, f{5}, f{6}, f{7}, ...
+        '        ', '        '];
 
-    % second line (continuation)
+    % Second line (continuation)
     line2 = [ ...
         '        ', ...
-        fmt(data(8)), ...
-        fmt(data(9)), ...
-        fmt(data(10)), ...
-        fmt(data(11)), ...
-        fmt(data(12)), ...
-        fmt(data(13))];
+        f{8}, f{9}, f{10}, f{11}, f{12}, f{13}];
 
-    % combine
+    % Combine
     txt = sprintf('%s\n%s\n', line1, line2);
 end
