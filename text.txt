@@ -1,40 +1,40 @@
-function txt = conm2_card(data)
-% data: [EID, G, CID, M, X1, X2, X3, I11, I21, I22, I31, I32, I33]
+function [m_total, cg_total, I_total] = combine_masses(data)
+% data: Nx7 matrix
+% columns: [m, xcg, ycg, zcg, ixx, iyy, izz]
+%
+% Outputs:
+%   m_total  - total mass (scalar)
+%   cg_total - [1x3] combined CG
+%   I_total  - [3x3] inertia tensor about combined CG
 
-    if numel(data) ~= 13
-        error('Input must have 13 elements');
+    % --- Extract columns ---
+    m = data(:,1);
+    r = data(:,2:4);
+    I_diag = data(:,5:7);
+
+    % --- Total mass ---
+    m_total = sum(m);
+
+    % --- Combined CG ---
+    cg_total = sum(r .* m, 1) / m_total;
+
+    % --- Initialize inertia tensor ---
+    I_total = zeros(3,3);
+
+    % --- Loop over masses ---
+    for i = 1:length(m)
+        mi = m(i);
+        ri = r(i,:);
+        di = ri - cg_total;  % offset vector
+
+        % Inertia at CG (diagonal)
+        I_cg = diag(I_diag(i,:));
+
+        % Parallel axis theorem
+        d2 = dot(di, di);
+        I_parallel = mi * (d2 * eye(3) - (di' * di));
+
+        % Accumulate
+        I_total = I_total + I_cg + I_parallel;
     end
-
-    % Preallocate fields
-    f = cell(1,13);
-
-    for i = 1:13
-        val = data(i);
-
-        if isnan(val)
-            f{i} = '        '; % 8 spaces
-        else
-            if i <= 7
-                % First line → fixed point
-                f{i} = sprintf('%8.2f', val);
-            else
-                % Second line → exponential
-                f{i} = sprintf('%8.2E', val);
-            end
-        end
-    end
-
-    % First line
-    line1 = [ ...
-        sprintf('%-8s','CONM2'), ...
-        f{1}, f{2}, f{3}, f{4}, f{5}, f{6}, f{7}, ...
-        '        ', '        '];
-
-    % Second line (continuation)
-    line2 = [ ...
-        '        ', ...
-        f{8}, f{9}, f{10}, f{11}, f{12}, f{13}];
-
-    % Combine
-    txt = sprintf('%s\n%s\n', line1, line2);
 end
