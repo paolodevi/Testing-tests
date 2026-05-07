@@ -1,64 +1,82 @@
+%% HIGH-QUALITY CLOSED ENVELOPE FOR LOOPING CURVES
+% XDATA(i,:) and YDATA(i,:) define one curve
+
+clear BW
+
 %% PARAMETERS
 
-Nx = 2000;   % horizontal resolution
-Ny = 2000;   % vertical resolution
+Nx = 4000;      % raster resolution
+Ny = 4000;
 
-%% COLLECT ALL POINTS
+lineWidth = 3;  % thickness in pixels
 
-x = XDATA(:);
-y = YDATA(:);
+%% GLOBAL LIMITS
 
-valid = ~(isnan(x) | isnan(y));
+xmin = min(XDATA(:));
+xmax = max(XDATA(:));
 
-x = x(valid);
-y = y(valid);
+ymin = min(YDATA(:));
+ymax = max(YDATA(:));
 
-%% DEFINE GRID
-
-xmin = min(x);
-xmax = max(x);
-
-ymin = min(y);
-ymax = max(y);
-
-xg = linspace(xmin, xmax, Nx);
-yg = linspace(ymin, ymax, Ny);
+%% CREATE EMPTY IMAGE
 
 BW = false(Ny, Nx);
 
-%% RASTERIZE ALL CURVES
+%% DRAW EVERY CURVE CONTINUOUSLY
 
 for k = 1:size(XDATA,1)
 
-    xx = XDATA(k,:);
-    yy = YDATA(k,:);
+    x = XDATA(k,:);
+    y = YDATA(k,:);
 
-    valid = ~(isnan(xx) | isnan(yy));
+    valid = ~(isnan(x) | isnan(y));
 
-    xx = xx(valid);
-    yy = yy(valid);
+    x = x(valid);
+    y = y(valid);
 
-    % Convert coordinates to pixel indices
-    ix = round( interp1(xg, 1:Nx, xx) );
-    iy = round( interp1(yg, 1:Ny, yy) );
+    % map coordinates -> image coordinates
+    ix = 1 + (Nx-1)*(x - xmin)/(xmax - xmin);
+    iy = 1 + (Ny-1)*(y - ymin)/(ymax - ymin);
 
-    valid2 = ...
-        ix >= 1 & ix <= Nx & ...
-        iy >= 1 & iy <= Ny;
+    % draw every segment
+    for n = 1:length(ix)-1
 
-    ix = ix(valid2);
-    iy = iy(valid2);
+        x1 = ix(n);
+        y1 = iy(n);
 
-    ind = sub2ind([Ny Nx], iy, ix);
+        x2 = ix(n+1);
+        y2 = iy(n+1);
 
-    BW(ind) = true;
+        % dense interpolation along segment
+        Nseg = max( ...
+            abs(round(x2-x1)), ...
+            abs(round(y2-y1)) ) * 4 + 1;
+
+        xs = linspace(x1,x2,Nseg);
+        ys = linspace(y1,y2,Nseg);
+
+        xs = round(xs);
+        ys = round(ys);
+
+        valid2 = ...
+            xs >= 1 & xs <= Nx & ...
+            ys >= 1 & ys <= Ny;
+
+        xs = xs(valid2);
+        ys = ys(valid2);
+
+        ind = sub2ind([Ny Nx], ys, xs);
+
+        BW(ind) = true;
+    end
 end
 
-%% CONNECT SMALL GAPS
+%% THICKEN CURVES
+% closes tiny gaps between nearby trajectories
 
-BW = imdilate(BW, strel('disk',3));
+BW = imdilate(BW, strel('disk', lineWidth));
 
-%% FILL INTERIOR
+%% FILL INTERNAL REGIONS
 
 BW = imfill(BW, 'holes');
 
@@ -66,9 +84,10 @@ BW = imfill(BW, 'holes');
 
 B = bwboundaries(BW, 'noholes');
 
-% choose largest boundary
-npts = cellfun(@(c) size(c,1), B);
-[~,idx] = max(npts);
+% keep largest connected boundary
+sizes = cellfun(@(c) size(c,1), B);
+
+[~,idx] = max(sizes);
 
 boundary = B{idx};
 
@@ -77,8 +96,8 @@ boundary = B{idx};
 iy = boundary(:,1);
 ix = boundary(:,2);
 
-xb = interp1(1:Nx, xg, ix);
-yb = interp1(1:Ny, yg, iy);
+xb = xmin + (ix-1)*(xmax-xmin)/(Nx-1);
+yb = ymin + (iy-1)*(ymax-ymin)/(Ny-1);
 
 %% PLOT
 
@@ -86,13 +105,13 @@ figure
 hold on
 axis equal
 
-plot(XDATA.', YDATA.', 'Color', [0.7 0.7 0.7])
+plot(XDATA.', YDATA.', 'k')
 
 patch( ...
     xb, ...
     yb, ...
-    [0.2 0.6 1], ...
-    'FaceAlpha',0.3, ...
+    [0 0.447 0.741], ...
+    'FaceAlpha',0.25, ...
     'EdgeColor','b', ...
     'LineWidth',2);
 
