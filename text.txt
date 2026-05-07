@@ -1,41 +1,99 @@
-% XDATA and YDATA:
-% each row = one curve
+%% PARAMETERS
 
-% Convert all curves into one point cloud
+Nx = 2000;   % horizontal resolution
+Ny = 2000;   % vertical resolution
+
+%% COLLECT ALL POINTS
+
 x = XDATA(:);
 y = YDATA(:);
 
-% Remove NaNs if present
 valid = ~(isnan(x) | isnan(y));
+
 x = x(valid);
 y = y(valid);
 
-% Build alpha shape
-shp = alphaShape(x, y);
+%% DEFINE GRID
 
-% Tune alpha radius:
-% smaller -> tighter envelope
-% larger  -> smoother / more convex
-shp.Alpha = criticalAlpha(shp, 'one-region');
+xmin = min(x);
+xmax = max(x);
 
-% Extract boundary
-[bndPoints, ~] = boundaryFacets(shp);
+ymin = min(y);
+ymax = max(y);
 
-% Plot
+xg = linspace(xmin, xmax, Nx);
+yg = linspace(ymin, ymax, Ny);
+
+BW = false(Ny, Nx);
+
+%% RASTERIZE ALL CURVES
+
+for k = 1:size(XDATA,1)
+
+    xx = XDATA(k,:);
+    yy = YDATA(k,:);
+
+    valid = ~(isnan(xx) | isnan(yy));
+
+    xx = xx(valid);
+    yy = yy(valid);
+
+    % Convert coordinates to pixel indices
+    ix = round( interp1(xg, 1:Nx, xx) );
+    iy = round( interp1(yg, 1:Ny, yy) );
+
+    valid2 = ...
+        ix >= 1 & ix <= Nx & ...
+        iy >= 1 & iy <= Ny;
+
+    ix = ix(valid2);
+    iy = iy(valid2);
+
+    ind = sub2ind([Ny Nx], iy, ix);
+
+    BW(ind) = true;
+end
+
+%% CONNECT SMALL GAPS
+
+BW = imdilate(BW, strel('disk',3));
+
+%% FILL INTERIOR
+
+BW = imfill(BW, 'holes');
+
+%% EXTRACT OUTER BOUNDARY
+
+B = bwboundaries(BW, 'noholes');
+
+% choose largest boundary
+npts = cellfun(@(c) size(c,1), B);
+[~,idx] = max(npts);
+
+boundary = B{idx};
+
+%% CONVERT BACK TO DATA COORDINATES
+
+iy = boundary(:,1);
+ix = boundary(:,2);
+
+xb = interp1(1:Nx, xg, ix);
+yb = interp1(1:Ny, yg, iy);
+
+%% PLOT
+
 figure
 hold on
 axis equal
 
-% Plot original curves
 plot(XDATA.', YDATA.', 'Color', [0.7 0.7 0.7])
 
-% Closed envelope patch
 patch( ...
-    bndPoints(:,1), ...
-    bndPoints(:,2), ...
+    xb, ...
+    yb, ...
     [0.2 0.6 1], ...
-    'FaceAlpha', 0.3, ...
-    'EdgeColor', 'b', ...
-    'LineWidth', 2);
+    'FaceAlpha',0.3, ...
+    'EdgeColor','b', ...
+    'LineWidth',2);
 
 hold off
