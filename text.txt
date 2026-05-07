@@ -1,30 +1,41 @@
-% XDATA : [nCurves x nPoints]
-% YDATA : [nCurves x nPoints]
+% XDATA and YDATA:
+% each row = one curve
 
-x = XDATA(1,:);   % assuming all rows share same x
+% Convert all curves into one point cloud
+x = XDATA(:);
+y = YDATA(:);
 
-% Envelope
-y_upper = max(YDATA, [], 1);
-y_lower = min(YDATA, [], 1);
+% Remove NaNs if present
+valid = ~(isnan(x) | isnan(y));
+x = x(valid);
+y = y(valid);
 
-% Closed polygon coordinates
-x_patch = [x, fliplr(x)];
-y_patch = [y_upper, fliplr(y_lower)];
+% Build alpha shape
+shp = alphaShape(x, y);
+
+% Tune alpha radius:
+% smaller -> tighter envelope
+% larger  -> smoother / more convex
+shp.Alpha = criticalAlpha(shp, 'one-region');
+
+% Extract boundary
+[bndPoints, ~] = boundaryFacets(shp);
 
 % Plot
 figure
 hold on
+axis equal
 
-% Optional: plot all curves
+% Plot original curves
 plot(XDATA.', YDATA.', 'Color', [0.7 0.7 0.7])
 
-% Envelope patch
-patch(x_patch, y_patch, [0.2 0.6 1], ...
+% Closed envelope patch
+patch( ...
+    bndPoints(:,1), ...
+    bndPoints(:,2), ...
+    [0.2 0.6 1], ...
     'FaceAlpha', 0.3, ...
-    'EdgeColor', 'none');
-
-% Envelope bounds
-plot(x, y_upper, 'b', 'LineWidth', 1.5)
-plot(x, y_lower, 'b', 'LineWidth', 1.5)
+    'EdgeColor', 'b', ...
+    'LineWidth', 2);
 
 hold off
