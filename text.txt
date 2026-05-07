@@ -1,40 +1,30 @@
-function [m_total, cg_total, I_total] = combine_masses(data)
-% data: Nx7 matrix
-% columns: [m, xcg, ycg, zcg, ixx, iyy, izz]
-%
-% Outputs:
-%   m_total  - total mass (scalar)
-%   cg_total - [1x3] combined CG
-%   I_total  - [3x3] inertia tensor about combined CG
+% XDATA : [nCurves x nPoints]
+% YDATA : [nCurves x nPoints]
 
-    % --- Extract columns ---
-    m = data(:,1);
-    r = data(:,2:4);
-    I_diag = data(:,5:7);
+x = XDATA(1,:);   % assuming all rows share same x
 
-    % --- Total mass ---
-    m_total = sum(m);
+% Envelope
+y_upper = max(YDATA, [], 1);
+y_lower = min(YDATA, [], 1);
 
-    % --- Combined CG ---
-    cg_total = sum(r .* m, 1) / m_total;
+% Closed polygon coordinates
+x_patch = [x, fliplr(x)];
+y_patch = [y_upper, fliplr(y_lower)];
 
-    % --- Initialize inertia tensor ---
-    I_total = zeros(3,3);
+% Plot
+figure
+hold on
 
-    % --- Loop over masses ---
-    for i = 1:length(m)
-        mi = m(i);
-        ri = r(i,:);
-        di = ri - cg_total;  % offset vector
+% Optional: plot all curves
+plot(XDATA.', YDATA.', 'Color', [0.7 0.7 0.7])
 
-        % Inertia at CG (diagonal)
-        I_cg = diag(I_diag(i,:));
+% Envelope patch
+patch(x_patch, y_patch, [0.2 0.6 1], ...
+    'FaceAlpha', 0.3, ...
+    'EdgeColor', 'none');
 
-        % Parallel axis theorem
-        d2 = dot(di, di);
-        I_parallel = mi * (d2 * eye(3) - (di' * di));
+% Envelope bounds
+plot(x, y_upper, 'b', 'LineWidth', 1.5)
+plot(x, y_lower, 'b', 'LineWidth', 1.5)
 
-        % Accumulate
-        I_total = I_total + I_cg + I_parallel;
-    end
-end
+hold off
