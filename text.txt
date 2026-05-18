@@ -1,118 +1,48 @@
-%% HIGH-QUALITY CLOSED ENVELOPE FOR LOOPING CURVES
-% XDATA(i,:) and YDATA(i,:) define one curve
+function wait_for_nastran_finish(filename)
+%WAIT_FOR_NASTRAN_FINISH Waits until a Nastran job is completed.
+%
+% The logic is:
+%   1. Wait until filename.f06 is created
+%   2. Wait 2 seconds
+%   3. Wait until filename.op2 is deleted
+%   4. Wait 2 seconds
+%   5. Exit function
+%
+% Example:
+%   wait_for_nastran_finish('model_001')
 
-clear BW
+    % Build file names
+    f06_file = [filename '.f06'];
+    op2_file = [filename '.op2'];
 
-%% PARAMETERS
+    fprintf('Waiting for %s to be created...\n', f06_file);
 
-Nx = 4000;      % raster resolution
-Ny = 4000;
-
-lineWidth = 3;  % thickness in pixels
-
-%% GLOBAL LIMITS
-
-xmin = min(XDATA(:));
-xmax = max(XDATA(:));
-
-ymin = min(YDATA(:));
-ymax = max(YDATA(:));
-
-%% CREATE EMPTY IMAGE
-
-BW = false(Ny, Nx);
-
-%% DRAW EVERY CURVE CONTINUOUSLY
-
-for k = 1:size(XDATA,1)
-
-    x = XDATA(k,:);
-    y = YDATA(k,:);
-
-    valid = ~(isnan(x) | isnan(y));
-
-    x = x(valid);
-    y = y(valid);
-
-    % map coordinates -> image coordinates
-    ix = 1 + (Nx-1)*(x - xmin)/(xmax - xmin);
-    iy = 1 + (Ny-1)*(y - ymin)/(ymax - ymin);
-
-    % draw every segment
-    for n = 1:length(ix)-1
-
-        x1 = ix(n);
-        y1 = iy(n);
-
-        x2 = ix(n+1);
-        y2 = iy(n+1);
-
-        % dense interpolation along segment
-        Nseg = max( ...
-            abs(round(x2-x1)), ...
-            abs(round(y2-y1)) ) * 4 + 1;
-
-        xs = linspace(x1,x2,Nseg);
-        ys = linspace(y1,y2,Nseg);
-
-        xs = round(xs);
-        ys = round(ys);
-
-        valid2 = ...
-            xs >= 1 & xs <= Nx & ...
-            ys >= 1 & ys <= Ny;
-
-        xs = xs(valid2);
-        ys = ys(valid2);
-
-        ind = sub2ind([Ny Nx], ys, xs);
-
-        BW(ind) = true;
+    % ---------------------------------------------------------------------
+    % STEP 1: Wait for .f06 file to appear
+    % ---------------------------------------------------------------------
+    while ~isfile(f06_file)
+        pause(1); % check every second
     end
+
+    fprintf('%s detected.\n', f06_file);
+
+    % Wait additional 2 seconds
+    pause(2);
+
+    fprintf('Waiting for %s to be deleted...\n', op2_file);
+
+    % ---------------------------------------------------------------------
+    % STEP 2: Wait for .op2 file to disappear
+    % ---------------------------------------------------------------------
+    while isfile(op2_file)
+        pause(1); % check every second
+    end
+
+    fprintf('%s deleted.\n', op2_file);
+
+    % Wait additional 2 seconds
+    pause(2);
+
+    fprintf('Nastran process finished for "%s".\n', filename);
+
 end
-
-%% THICKEN CURVES
-% closes tiny gaps between nearby trajectories
-
-BW = imdilate(BW, strel('disk', lineWidth));
-
-%% FILL INTERNAL REGIONS
-
-BW = imfill(BW, 'holes');
-
-%% EXTRACT OUTER BOUNDARY
-
-B = bwboundaries(BW, 'noholes');
-
-% keep largest connected boundary
-sizes = cellfun(@(c) size(c,1), B);
-
-[~,idx] = max(sizes);
-
-boundary = B{idx};
-
-%% CONVERT BACK TO DATA COORDINATES
-
-iy = boundary(:,1);
-ix = boundary(:,2);
-
-xb = xmin + (ix-1)*(xmax-xmin)/(Nx-1);
-yb = ymin + (iy-1)*(ymax-ymin)/(Ny-1);
-
-%% PLOT
-
-figure
-hold on
-axis equal
-
-plot(XDATA.', YDATA.', 'k')
-
-patch( ...
-    xb, ...
-    yb, ...
-    [0 0.447 0.741], ...
-    'FaceAlpha',0.25, ...
-    'EdgeColor','b', ...
-    'LineWidth',2);
-
-hold off
