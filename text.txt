@@ -1,32 +1,6 @@
 function [m_total, cg_total, I_total] = totalMassCGInertia(data)
-%TOTALMASSCGINERTIA Computes total mass, center of gravity, and inertia tensor
-%
-% INPUT
-%   data : Nx10 matrix
-%
-%   Columns:
-%       1  -> mass
-%       2  -> x_cg
-%       3  -> y_cg
-%       4  -> z_cg
-%       5  -> Iyy
-%       6  -> Ixx
-%       7  -> Izz
-%       8  -> Ixy
-%       9  -> Ixz
-%       10 -> Iyz
-%
-% OUTPUT
-%   m_total  : total mass
-%   cg_total : [x y z] global center of gravity
-%   I_total  : 3x3 inertia tensor about total CG
-%
-% NOTES
-%   - Each row represents one component/body.
-%   - Inertias are assumed referenced to each component CG.
-%   - Parallel axis theorem is applied automatically.
 
-%% Extract columns
+% Column mapping
 m   = data(:,1);
 
 x   = data(:,2);
@@ -41,43 +15,55 @@ Ixy = data(:,8);
 Ixz = data(:,9);
 Iyz = data(:,10);
 
-%% Total mass
+%% TOTAL MASS
+
 m_total = sum(m);
 
-%% Total CG
-xg = sum(m .* x) / m_total;
-yg = sum(m .* y) / m_total;
-zg = sum(m .* z) / m_total;
+%% TOTAL CG
 
-cg_total = [xg yg zg];
+cg_total = [
+    sum(m .* x) / m_total
+    sum(m .* y) / m_total
+    sum(m .* z) / m_total
+];
 
-%% Initialize total inertia tensor about total CG
-I_total = zeros(3,3);
+xg = cg_total(1);
+yg = cg_total(2);
+zg = cg_total(3);
 
-%% Sum inertias using parallel axis theorem
+%% TOTAL INERTIA ABOUT TOTAL CG
+
+I_total = zeros(3);
+
 for k = 1:length(m)
 
-    % Component inertia tensor about its own CG
-    I_comp = [
-        Ixx(k), -Ixy(k), -Ixz(k);
-       -Ixy(k),  Iyy(k), -Iyz(k);
-       -Ixz(k), -Iyz(k),  Izz(k)
+    %% Inertia tensor about component CG
+    % IMPORTANT:
+    % Using POSITIVE products of inertia convention
+
+    Icg = [
+        Ixx(k)  Ixy(k)  Ixz(k)
+        Ixy(k)  Iyy(k)  Iyz(k)
+        Ixz(k)  Iyz(k)  Izz(k)
     ];
 
-    % Position vector from total CG to component CG
-    r = [
-        x(k) - xg;
-        y(k) - yg;
-        z(k) - zg
-    ];
+    %% Distance from component CG to total CG
 
-    d2 = dot(r,r);
+    dx = x(k) - xg;
+    dy = y(k) - yg;
+    dz = z(k) - zg;
 
-    % Parallel axis theorem term
-    I_shift = m(k) * (d2 * eye(3) - (r * r'));
+    r = [dx; dy; dz];
 
-    % Add shifted inertia
-    I_total = I_total + I_comp + I_shift;
+    %% Parallel axis theorem
+
+    Ishift = m(k) * (
+        (r.' * r) * eye(3) - (r * r.')
+    );
+
+    %% Add contribution
+
+    I_total = I_total + Icg + Ishift;
 
 end
 
