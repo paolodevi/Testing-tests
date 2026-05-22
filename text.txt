@@ -1,48 +1,84 @@
-function wait_for_nastran_finish(filename)
-%WAIT_FOR_NASTRAN_FINISH Waits until a Nastran job is completed.
+function [m_total, cg_total, I_total] = totalMassCGInertia(data)
+%TOTALMASSCGINERTIA Computes total mass, center of gravity, and inertia tensor
 %
-% The logic is:
-%   1. Wait until filename.f06 is created
-%   2. Wait 2 seconds
-%   3. Wait until filename.op2 is deleted
-%   4. Wait 2 seconds
-%   5. Exit function
+% INPUT
+%   data : Nx10 matrix
 %
-% Example:
-%   wait_for_nastran_finish('model_001')
+%   Columns:
+%       1  -> mass
+%       2  -> x_cg
+%       3  -> y_cg
+%       4  -> z_cg
+%       5  -> Iyy
+%       6  -> Ixx
+%       7  -> Izz
+%       8  -> Ixy
+%       9  -> Ixz
+%       10 -> Iyz
+%
+% OUTPUT
+%   m_total  : total mass
+%   cg_total : [x y z] global center of gravity
+%   I_total  : 3x3 inertia tensor about total CG
+%
+% NOTES
+%   - Each row represents one component/body.
+%   - Inertias are assumed referenced to each component CG.
+%   - Parallel axis theorem is applied automatically.
 
-    % Build file names
-    f06_file = [filename '.f06'];
-    op2_file = [filename '.op2'];
+%% Extract columns
+m   = data(:,1);
 
-    fprintf('Waiting for %s to be created...\n', f06_file);
+x   = data(:,2);
+y   = data(:,3);
+z   = data(:,4);
 
-    % ---------------------------------------------------------------------
-    % STEP 1: Wait for .f06 file to appear
-    % ---------------------------------------------------------------------
-    while ~isfile(f06_file)
-        pause(1); % check every second
-    end
+Iyy = data(:,5);
+Ixx = data(:,6);
+Izz = data(:,7);
 
-    fprintf('%s detected.\n', f06_file);
+Ixy = data(:,8);
+Ixz = data(:,9);
+Iyz = data(:,10);
 
-    % Wait additional 2 seconds
-    pause(2);
+%% Total mass
+m_total = sum(m);
 
-    fprintf('Waiting for %s to be deleted...\n', op2_file);
+%% Total CG
+xg = sum(m .* x) / m_total;
+yg = sum(m .* y) / m_total;
+zg = sum(m .* z) / m_total;
 
-    % ---------------------------------------------------------------------
-    % STEP 2: Wait for .op2 file to disappear
-    % ---------------------------------------------------------------------
-    while isfile(op2_file)
-        pause(1); % check every second
-    end
+cg_total = [xg yg zg];
 
-    fprintf('%s deleted.\n', op2_file);
+%% Initialize total inertia tensor about total CG
+I_total = zeros(3,3);
 
-    % Wait additional 2 seconds
-    pause(2);
+%% Sum inertias using parallel axis theorem
+for k = 1:length(m)
 
-    fprintf('Nastran process finished for "%s".\n', filename);
+    % Component inertia tensor about its own CG
+    I_comp = [
+        Ixx(k), -Ixy(k), -Ixz(k);
+       -Ixy(k),  Iyy(k), -Iyz(k);
+       -Ixz(k), -Iyz(k),  Izz(k)
+    ];
+
+    % Position vector from total CG to component CG
+    r = [
+        x(k) - xg;
+        y(k) - yg;
+        z(k) - zg
+    ];
+
+    d2 = dot(r,r);
+
+    % Parallel axis theorem term
+    I_shift = m(k) * (d2 * eye(3) - (r * r'));
+
+    % Add shifted inertia
+    I_total = I_total + I_comp + I_shift;
+
+end
 
 end
