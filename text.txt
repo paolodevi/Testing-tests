@@ -1,70 +1,215 @@
-function [m_total, cg_total, I_total] = totalMassCGInertia(data)
+function writeCONM2(fid, conm2)
+%WRITECONM2 Write MSC Nastran CONM2 card using strict 8-char formatting.
+%
+% Supports:
+%   - MSC/NX compatible small-field formatting
+%   - Scientific notation without 'E'
+%   - Automatic compact formatting
+%
+% INPUT
+%   fid   : fopen file identifier
+%   conm2 : struct with fields:
+%       .EID
+%       .G
+%       .CID
+%       .M
+%       .X   = [X1 X2 X3]
+%       .I   = [I11 I21 I22 I31 I32 I33]
 
-% Column mapping
-m   = data(:,1);
+    %-----------------------------
+    % Validation
+    %-----------------------------
+    required = {'EID','G','CID','M','X','I'};
 
-x   = data(:,2);
-y   = data(:,3);
-z   = data(:,4);
+    for k = 1:numel(required)
+        if ~isfield(conm2, required{k})
+            error('Missing field "%s"', required{k});
+        end
+    end
 
-Iyy = data(:,5);
-Ixx = data(:,6);
-Izz = data(:,7);
+    if numel(conm2.X) ~= 3
+        error('X must contain [X1 X2 X3]');
+    end
 
-Ixy = data(:,8);
-Ixz = data(:,9);
-Iyz = data(:,10);
+    if numel(conm2.I) ~= 6
+        error('I must contain [I11 I21 I22 I31 I32 I33]');
+    end
 
-%% TOTAL MASS
+    %-----------------------------
+    % First line
+    %-----------------------------
+    fprintf(fid, ...
+        '%-8s%s%s%s%s%s%s\n', ...
+        'CONM2', ...
+        nasFieldInt(conm2.EID), ...
+        nasFieldInt(conm2.G), ...
+        nasFieldInt(conm2.CID), ...
+        nasFieldReal(conm2.M), ...
+        nasFieldReal(conm2.X(1)), ...
+        nasFieldReal(conm2.X(2)), ...
+        nasFieldReal(conm2.X(3)));
 
-m_total = sum(m);
+    %-----------------------------
+    % Continuation line
+    %-----------------------------
+    fprintf(fid, ...
+        '%-8s%s%s%s%s%s%s\n', ...
+        '', ...
+        nasFieldReal(conm2.I(1)), ...
+        nasFieldReal(conm2.I(2)), ...
+        nasFieldReal(conm2.I(3)), ...
+        nasFieldReal(conm2.I(4)), ...
+        nasFieldReal(conm2.I(5)), ...
+        nasFieldReal(conm2.I(6)));
 
-%% TOTAL CG
+end
 
-cg_total = [
-    sum(m .* x) / m_total
-    sum(m .* y) / m_total
-    sum(m .* z) / m_total
+%==========================================================================
+% INTEGER FIELD
+%==========================================================================
+function s = nasFieldInt(val)
+
+    s = sprintf('%8d', val);
+
+    if length(s) > 8
+        error('Integer "%d" exceeds 8-char field width.', val);
+    end
+
+end
+
+%==========================================================================
+% REAL FIELD
+%==========================================================================
+function s = nasFieldReal(val)
+% Formats real numbers using MSC Nastran small-field conventions.
+%
+% Examples:
+%   0            -> '      0.'
+%   12.345       -> ' 12.345'
+%   1234567      -> '1234567.'
+%   1.2e-5       -> '1.2-5'
+%   -3.45e+7     -> '-3.45+7'
+
+    % Special case zero
+    if val == 0
+        s = '      0.';
+        return;
+    end
+
+    absVal = abs(val);
+
+    %------------------------------------------------------
+    % Try fixed notation first
+    %------------------------------------------------------
+    if absVal >= 1e-4 && absVal < 1e7
+
+        for dec = 6:-1:0
+
+            fmt = sprintf('%%.%df', dec);
+            tmp = sprintf(fmt, val);
+
+            % Remove trailing zeros
+            tmp = regexprep(tmp, '0+$', '');
+            tmp = regexprep(tmp, '\.$', '.');
+
+            if length(tmp) <= 8
+                s = sprintf('%8s', tmp);
+                return;
+            end
+        end
+    end
+
+    %------------------------------------------------------
+    % MSC-style scientific notation
+    % Example:
+    %   1.23E-05 -> '1.23-5'
+    %   4.56E+07 -> '4.56+7'
+    %------------------------------------------------------
+    exponent = floor(log10(absVal));
+    mantissa = val / 10^exponent;
+
+    expSign = '+';
+    if exponent < 0
+        expSign = '-';
+    end
+
+    exponentAbs = abs(exponent);
+
+    % Determine available mantissa length
+    % Total field = 8 chars
+    %
+    % Example:
+    %   1.2-5
+    %   -1.2+7
+    %
+    expStr = sprintf('%s%d', expSign, exponentAbs);
+
+    remaining = 8 - length(expStr);
+
+    found = false;
+
+    for dec = 5:-1:0
+
+        fmt = sprintf('%%.%df', dec);
+        mantStr = sprintf(fmt, mantissa);
+
+        mantStr = regexprep(mantStr, '0+$', '');
+        mantStr = regexprep(mantStr, '\.$', '.');
+
+        candidate = [mantStr expStr];
+
+        if length(candidate) <= 8
+            s = sprintf('%8s', candidate);
+            found = true;
+            break;
+        end
+    end
+
+    if ~found
+        error('Cannot format value %g into 8-char Nastran field.', val);
+    end
+
+end
+
+Example:
+
+conm2.EID = 2001;
+conm2.G   = 1001;
+conm2.CID = 0;
+
+conm2.M = 1.2345e-5;
+
+conm2.X = [0 0 25];
+
+conm2.I = [
+    1.2e-5
+    0
+    3.456e7
+    -2.34e-8
+    0
+    80
 ];
 
-xg = cg_total(1);
-yg = cg_total(2);
-zg = cg_total(3);
+fid = fopen('model.bdf','w');
 
-%% TOTAL INERTIA ABOUT TOTAL CG
+writeCONM2(fid, conm2);
 
-I_total = zeros(3);
+fclose(fid);
 
-for k = 1:length(m)
+Produces something very close to native MSC formatting:
 
-    %% Inertia tensor about component CG
-    % IMPORTANT:
-    % Using POSITIVE products of inertia convention
+CONM2      2001    1001       0 1.23-5      0.      0.     25.
+         1.2-5      0. 3.46+7-2.3-8      0.     80.
 
-    Icg = [
-        Ixx(k)  Ixy(k)  Ixz(k)
-        Ixy(k)  Iyy(k)  Iyz(k)
-        Ixz(k)  Iyz(k)  Izz(k)
-    ];
+This formatting style is the classic:
 
-    %% Distance from component CG to total CG
+no E
 
-    dx = x(k) - xg;
-    dy = y(k) - yg;
-    dz = z(k) - zg;
+exponent appended directly
 
-    r = [dx; dy; dz];
+maximum use of 8-character fields
 
-    %% Parallel axis theorem
+compact mantissa trimming
 
-    Ishift = m(k) * (
-        (r.' * r) * eye(3) - (r * r.')
-    );
 
-    %% Add contribution
-
-    I_total = I_total + Icg + Ishift;
-
-end
-
-end
+which is what MSC/NX bulk data writers typically generate.
