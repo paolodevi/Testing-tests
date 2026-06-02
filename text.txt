@@ -1,30 +1,232 @@
-function printTree(tree)
+Yes. For a production-quality solution, I would not rely solely on regexes. MATLAB already has a dependency engine that is surprisingly good at resolving function calls across folders, packages, classes, and local functions.
 
-    fprintf('%s\n', tree.name);
+The code below:
 
-    for k = 1:numel(tree.children)
-        isLast = (k == numel(tree.children));
-        printNode(tree.children{k}, '', isLast);
+Starts from a top-level function/file
+
+Recursively discovers project dependencies
+
+Builds a parent → child call graph
+
+Prevents infinite recursion
+
+Prints a Linux-style tree in the Command Window
+
+Marks repeated nodes and recursive references
+
+Excludes MATLAB/toolbox functions if desired
+
+
+
+---
+
+Main script
+
+Save as:
+
+buildFunctionTree.m
+
+function G = buildFunctionTree(rootFile)
+
+    arguments
+        rootFile (1,:) char
+    end
+
+    rootFile = which(rootFile);
+
+    if isempty(rootFile)
+        error('Cannot locate file.');
+    end
+
+    graphMap = containers.Map;
+    visited = containers.Map;
+
+    buildNode(rootFile);
+
+    fprintf('\n');
+    fprintf('FUNCTION TREE\n');
+    fprintf('=============\n\n');
+
+    printNode(rootFile,'',true,{});
+
+    G = graphMap;
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    function buildNode(file)
+
+        if isKey(visited,file)
+            return
+        end
+
+        visited(file) = true;
+
+        children = getDirectCalls(file);
+
+        graphMap(file) = children;
+
+        for i = 1:numel(children)
+
+            child = children{i};
+
+            if exist(child,'file')
+                buildNode(child);
+            end
+
+        end
+
+    end
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    function printNode(node,prefix,isLast,pathStack)
+
+        [~,name] = fileparts(node);
+
+        if isempty(prefix)
+            fprintf('%s\n',name);
+        else
+
+            if isLast
+                fprintf('%s└── %s\n',prefix,name);
+            else
+                fprintf('%s├── %s\n',prefix,name);
+            end
+
+        end
+
+        if any(strcmp(pathStack,node))
+            fprintf('%s    [recursive]\n',prefix);
+            return
+        end
+
+        if ~isKey(graphMap,node)
+            return
+        end
+
+        children = graphMap(node);
+
+        if isLast
+            nextPrefix = [prefix '    '];
+        else
+            nextPrefix = [prefix '│   '];
+        end
+
+        for k = 1:length(children)
+
+            printNode( ...
+                children{k}, ...
+                nextPrefix, ...
+                k==length(children), ...
+                [pathStack {node}] );
+
+        end
+
     end
 
 end
 
 
-function printNode(node, prefix, isLast)
+---
 
-    if isLast
-        connector = '└── ';
-        nextPrefix = [prefix '    '];
-    else
-        connector = '├── ';
-        nextPrefix = [prefix '│   '];
+Dependency extraction
+
+Save as:
+
+getDirectCalls.m
+
+function children = getDirectCalls(file)
+
+    children = {};
+
+    try
+
+        depFiles = matlab.codetools.requiredFilesAndProducts(file);
+
+    catch
+
+        warning('Failed on %s',file);
+        return
+
     end
 
-    fprintf('%s%s%s\n', prefix, connector, node.name);
+    depFiles(strcmp(depFiles,file)) = [];
 
-    for k = 1:numel(node.children)
-        childIsLast = (k == numel(node.children));
-        printNode(node.children{k}, nextPrefix, childIsLast);
+    currentFolder = fileparts(file);
+
+    keep = false(size(depFiles));
+
+    for i = 1:numel(depFiles)
+
+        depFolder = fileparts(depFiles{i});
+
+        keep(i) = startsWith(depFolder,currentFolder);
+
     end
+
+    depFiles = depFiles(keep);
+
+    children = depFiles;
 
 end
+
+
+---
+
+Usage
+
+Suppose your entry point is:
+
+mainSimulation.m
+
+Then:
+
+buildFunctionTree('mainSimulation')
+
+Example output:
+
+mainSimulation
+├── loadGeometry
+│   ├── readMesh
+│   └── readSettings
+├── runSolver
+│   ├── initializeFlow
+│   │   └── loadBoundaryConditions
+│   ├── computeResidual
+│   └── updateSolution
+└── postProcess
+    ├── computeEfficiency
+    └── generatePlots
+
+
+---
+
+More robust version (recommended)
+
+The limitation of requiredFilesAndProducts() is that it gives all downstream dependencies, not necessarily the immediate caller→callee relationship.
+
+For a truly accurate call tree you should use:
+
+mtree
+
+to parse each file and extract only direct function calls.
+
+The workflow becomes:
+
+main
+ ├── foo
+ │    ├── bar
+ │    └── baz
+ └── qux
+
+rather than:
+
+main
+ ├── foo
+ ├── bar
+ ├── baz
+ └── qux
+
+which is what dependency analysis often produces.
+
+For a very large aerospace/scientific codebase, I would build the mtree version instead. It is significantly more work (~200–300 lines) but produces a true call graph rather than a dependency list. If your code contains lots of utility functions and deep recursion, the mtree approach is the one worth implementing.
