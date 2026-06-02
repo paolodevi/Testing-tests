@@ -1,215 +1,191 @@
-function writeCONM2(fid, conm2)
-%WRITECONM2 Write MSC Nastran CONM2 card using strict 8-char formatting.
-%
-% Supports:
-%   - MSC/NX compatible small-field formatting
-%   - Scientific notation without 'E'
-%   - Automatic compact formatting
-%
-% INPUT
-%   fid   : fopen file identifier
-%   conm2 : struct with fields:
-%       .EID
-%       .G
-%       .CID
-%       .M
-%       .X   = [X1 X2 X3]
-%       .I   = [I11 I21 I22 I31 I32 I33]
+A good way to approach this in MATLAB is to build a call graph starting from a top-level function.
 
-    %-----------------------------
-    % Validation
-    %-----------------------------
-    required = {'EID','G','CID','M','X','I'};
+The key challenges are:
 
-    for k = 1:numel(required)
-        if ~isfield(conm2, required{k})
-            error('Missing field "%s"', required{k});
-        end
+1. Add all source folders to the MATLAB path.
+
+
+2. Parse each .m file to find function calls.
+
+
+3. Determine whether each called function is:
+
+a MATLAB built-in,
+
+a toolbox function,
+
+or a user-defined function in your source directories.
+
+
+
+4. Recursively process user-defined functions.
+
+
+5. Avoid infinite loops when functions call each other.
+
+
+
+MATLAB provides useful functions such as which() and exist() that can help distinguish built-ins from user code.
+
+Here's a starting implementation:
+
+function callTree = analyzeDependencies(mainFunction, sourcePaths)
+
+    % Add source directories to path
+    for k = 1:numel(sourcePaths)
+        addpath(genpath(sourcePaths{k}));
     end
 
-    if numel(conm2.X) ~= 3
-        error('X must contain [X1 X2 X3]');
-    end
-
-    if numel(conm2.I) ~= 6
-        error('I must contain [I11 I21 I22 I31 I32 I33]');
-    end
-
-    %-----------------------------
-    % First line
-    %-----------------------------
-    fprintf(fid, ...
-        '%-8s%s%s%s%s%s%s\n', ...
-        'CONM2', ...
-        nasFieldInt(conm2.EID), ...
-        nasFieldInt(conm2.G), ...
-        nasFieldInt(conm2.CID), ...
-        nasFieldReal(conm2.M), ...
-        nasFieldReal(conm2.X(1)), ...
-        nasFieldReal(conm2.X(2)), ...
-        nasFieldReal(conm2.X(3)));
-
-    %-----------------------------
-    % Continuation line
-    %-----------------------------
-    fprintf(fid, ...
-        '%-8s%s%s%s%s%s%s\n', ...
-        '', ...
-        nasFieldReal(conm2.I(1)), ...
-        nasFieldReal(conm2.I(2)), ...
-        nasFieldReal(conm2.I(3)), ...
-        nasFieldReal(conm2.I(4)), ...
-        nasFieldReal(conm2.I(5)), ...
-        nasFieldReal(conm2.I(6)));
+    processed = containers.Map();
+    callTree = processFunction(mainFunction, processed);
 
 end
 
-%==========================================================================
-% INTEGER FIELD
-%==========================================================================
-function s = nasFieldInt(val)
 
-    s = sprintf('%8d', val);
+function node = processFunction(funcName, processed)
 
-    if length(s) > 8
-        error('Integer "%d" exceeds 8-char field width.', val);
+    node.name = funcName;
+    node.children = {};
+
+    % Prevent recursion loops
+    if isKey(processed, funcName)
+        return
     end
 
-end
+    processed(funcName) = true;
 
-%==========================================================================
-% REAL FIELD
-%==========================================================================
-function s = nasFieldReal(val)
-% Formats real numbers using MSC Nastran small-field conventions.
-%
-% Examples:
-%   0            -> '      0.'
-%   12.345       -> ' 12.345'
-%   1234567      -> '1234567.'
-%   1.2e-5       -> '1.2-5'
-%   -3.45e+7     -> '-3.45+7'
+    funcFile = which(funcName);
 
-    % Special case zero
-    if val == 0
-        s = '      0.';
-        return;
+    if isempty(funcFile)
+        return
     end
 
-    absVal = abs(val);
+    calls = findFunctionCalls(funcFile);
 
-    %------------------------------------------------------
-    % Try fixed notation first
-    %------------------------------------------------------
-    if absVal >= 1e-4 && absVal < 1e7
+    for k = 1:length(calls)
 
-        for dec = 6:-1:0
+        calledFunc = calls{k};
 
-            fmt = sprintf('%%.%df', dec);
-            tmp = sprintf(fmt, val);
-
-            % Remove trailing zeros
-            tmp = regexprep(tmp, '0+$', '');
-            tmp = regexprep(tmp, '\.$', '.');
-
-            if length(tmp) <= 8
-                s = sprintf('%8s', tmp);
-                return;
-            end
+        if isBuiltinOrToolbox(calledFunc)
+            continue
         end
-    end
 
-    %------------------------------------------------------
-    % MSC-style scientific notation
-    % Example:
-    %   1.23E-05 -> '1.23-5'
-    %   4.56E+07 -> '4.56+7'
-    %------------------------------------------------------
-    exponent = floor(log10(absVal));
-    mantissa = val / 10^exponent;
+        child = processFunction(calledFunc, processed);
+        node.children{end+1} = child;
 
-    expSign = '+';
-    if exponent < 0
-        expSign = '-';
-    end
-
-    exponentAbs = abs(exponent);
-
-    % Determine available mantissa length
-    % Total field = 8 chars
-    %
-    % Example:
-    %   1.2-5
-    %   -1.2+7
-    %
-    expStr = sprintf('%s%d', expSign, exponentAbs);
-
-    remaining = 8 - length(expStr);
-
-    found = false;
-
-    for dec = 5:-1:0
-
-        fmt = sprintf('%%.%df', dec);
-        mantStr = sprintf(fmt, mantissa);
-
-        mantStr = regexprep(mantStr, '0+$', '');
-        mantStr = regexprep(mantStr, '\.$', '.');
-
-        candidate = [mantStr expStr];
-
-        if length(candidate) <= 8
-            s = sprintf('%8s', candidate);
-            found = true;
-            break;
-        end
-    end
-
-    if ~found
-        error('Cannot format value %g into 8-char Nastran field.', val);
     end
 
 end
 
-Example:
 
-conm2.EID = 2001;
-conm2.G   = 1001;
-conm2.CID = 0;
+function tf = isBuiltinOrToolbox(funcName)
 
-conm2.M = 1.2345e-5;
+    tf = true;
 
-conm2.X = [0 0 25];
+    location = which(funcName);
 
-conm2.I = [
-    1.2e-5
-    0
-    3.456e7
-    -2.34e-8
-    0
-    80
-];
+    if isempty(location)
+        return
+    end
 
-fid = fopen('model.bdf','w');
+    if contains(location,'built-in')
+        return
+    end
 
-writeCONM2(fid, conm2);
+    matlabrootPath = matlabroot;
 
-fclose(fid);
+    if startsWith(location, matlabrootPath)
+        return
+    end
 
-Produces something very close to native MSC formatting:
+    tf = false;
 
-CONM2      2001    1001       0 1.23-5      0.      0.     25.
-         1.2-5      0. 3.46+7-2.3-8      0.     80.
-
-This formatting style is the classic:
-
-no E
-
-exponent appended directly
-
-maximum use of 8-character fields
-
-compact mantissa trimming
+end
 
 
-which is what MSC/NX bulk data writers typically generate.
+function calls = findFunctionCalls(mfile)
+
+    txt = fileread(mfile);
+
+    % Remove comments
+    txt = regexprep(txt,'%.*','');
+
+    % Find function-like patterns
+    tokens = regexp(txt,...
+        '(?<![\.\w])([A-Za-z]\w*)\s*\(',...
+        'tokens');
+
+    calls = unique(string([tokens{:}]));
+
+    keywords = [
+        "if","for","while","switch","case","otherwise",...
+        "function","end","try","catch","classdef"
+        ];
+
+    calls = setdiff(calls,keywords);
+
+    calls = cellstr(calls);
+
+end
+
+Usage:
+
+paths = {
+    'C:\Project\Core'
+    'C:\Project\Utilities'
+    };
+
+tree = analyzeDependencies('mainFunction', paths);
+
+A more robust approach
+
+The regex approach works surprisingly well for many codebases, but MATLAB already contains dependency-analysis tools that are much more accurate:
+
+deps = matlab.codetools.requiredFilesAndProducts('mainFunction.m');
+
+This returns all dependent files MATLAB can detect.
+
+If your goal is simply:
+
+> Starting from mainFunction, list every non-MATLAB function that is eventually called
+
+
+
+then requiredFilesAndProducts() is often the easiest solution:
+
+deps = matlab.codetools.requiredFilesAndProducts('mainFunction.m');
+
+for k = 1:numel(deps)
+    disp(deps{k})
+end
+
+You can then filter out anything under matlabroot:
+
+userFiles = deps(~startsWith(deps, matlabroot));
+
+This is generally more reliable than parsing source text yourself because it understands:
+
+methods,
+
+packages (+pkg),
+
+class definitions,
+
+local functions,
+
+overloaded functions,
+
+toolbox dependencies.
+
+
+A few questions before going further:
+
+1. Do you want a flat list of all non-built-in dependencies, or a hierarchical call tree showing who calls whom?
+
+
+2. Is the code mostly procedural .m files, or does it use MATLAB classes (classdef) heavily?
+
+
+3. Are the two source folders the complete codebase, or are there additional third-party folders on the MATLAB path?
+
+
