@@ -1,3 +1,116 @@
+
+function plotSensitivityBar3(results)
+% results: 1×n struct array with fields:
+% results(i).crit.fwdF
+% results(i).crit.ctrF
+% results(i).crit.dia1
+% results(i).crit.dia2
+% results(i).crit.dia3
+
+    n = numel(results);
+
+    % -----------------------------
+    % 1. Extract parameter pairs
+    % -----------------------------
+    fwdF = zeros(n,1);
+    ctrF = zeros(n,1);
+
+    dia1 = zeros(n,1);
+    dia2 = zeros(n,1);
+    dia3 = zeros(n,1);
+
+    for i = 1:n
+        fwdF(i) = results(i).crit.fwdF;
+        ctrF(i) = results(i).crit.ctrF;
+
+        dia1(i) = results(i).crit.dia1;
+        dia2(i) = results(i).crit.dia2;
+        dia3(i) = results(i).crit.dia3;
+    end
+
+    % -----------------------------
+    % 2. Build unique sorted grid
+    % -----------------------------
+    xVals = unique(fwdF);
+    yVals = unique(ctrF);
+
+    nx = numel(xVals);
+    ny = numel(yVals);
+
+    % -----------------------------
+    % 3. Allocate matrices
+    % rows = ctrF, cols = fwdF
+    % -----------------------------
+    Z1 = nan(ny, nx);
+    Z2 = nan(ny, nx);
+    Z3 = nan(ny, nx);
+
+    % map values into grid
+    for i = 1:n
+        ix = find(xVals == fwdF(i));
+        iy = find(yVals == ctrF(i));
+
+        Z1(iy, ix) = dia1(i);
+        Z2(iy, ix) = dia2(i);
+        Z3(iy, ix) = dia3(i);
+    end
+
+    % -----------------------------
+    % 4. Normalize (global max)
+    % -----------------------------
+    allVals = [Z1(:); Z2(:); Z3(:)];
+    scale = max(allVals, [], 'omitnan');
+
+    Z1 = Z1 / scale;
+    Z2 = Z2 / scale;
+    Z3 = Z3 / scale;
+
+    % -----------------------------
+    % 5. Plot grouped bar3
+    % -----------------------------
+    figure; hold on;
+
+    b1 = bar3(Z1, 0.8);
+    b2 = bar3(Z2, 0.8);
+    b3 = bar3(Z3, 0.8);
+
+    % -----------------------------
+    % 6. Style + transparency offsets
+    % -----------------------------
+    for k = 1:length(b1)
+        b1(k).FaceAlpha = 0.6;
+        b2(k).FaceAlpha = 0.6;
+        b3(k).FaceAlpha = 0.6;
+    end
+
+    % offset bars slightly in Z direction for visibility
+    for k = 1:length(b1)
+        b2(k).ZData = b2(k).ZData + 0.05;
+        b3(k).ZData = b3(k).ZData + 0.10;
+    end
+
+    % -----------------------------
+    % 7. Axes labeling
+    % -----------------------------
+    xticks(1:nx);
+    xticklabels(xVals);
+
+    yticks(1:ny);
+    yticklabels(yVals);
+
+    xlabel('fwdF');
+    ylabel('ctrF');
+    zlabel('Normalized response');
+
+    legend({'dia1','dia2','dia3'});
+    view(45,30);
+    grid on;
+
+end
+
+
+
+
 function metric = diamondMetric(x,y,diamond)
 
     % Ensure column vectors
