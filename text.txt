@@ -1,4 +1,232 @@
+What you are really describing is a 3D grouped bar plot problem:
 
+Grid defined by (fwdF, ctrF)
+
+At each grid node → 3 bars (dia1, dia2, dia3)
+
+Bars must be:
+
+side-by-side (grouped, not stacked)
+
+color-coded by metric
+
+repeated colors across grid (same dia always same color)
+
+
+
+MATLAB’s bar3 is not designed for true grouped 3D bars per grid cell, so the correct solution is to manually offset bars in X-Y space and draw them as separate surfaces.
+
+
+---
+
+✅ Clean solution (true grouped 3D bars per grid point)
+
+This approach:
+
+Builds a mesh grid
+
+Offsets 3 datasets slightly in X direction
+
+Keeps same color per dataset
+
+Normalizes values
+
+Produces clean grouped structure
+
+
+
+---
+
+🔧 Function
+
+function plotGroupedSensitivity3D(results)
+
+    n = numel(results);
+
+    % -----------------------
+    % Extract data
+    % -----------------------
+    fwdF = zeros(n,1);
+    ctrF = zeros(n,1);
+
+    d1 = zeros(n,1);
+    d2 = zeros(n,1);
+    d3 = zeros(n,1);
+
+    for i = 1:n
+        fwdF(i) = results(i).crit.fwdF;
+        ctrF(i) = results(i).crit.ctrF;
+
+        d1(i) = results(i).crit.dia1;
+        d2(i) = results(i).crit.dia2;
+        d3(i) = results(i).crit.dia3;
+    end
+
+    % -----------------------
+    % Grid
+    % -----------------------
+    xVals = unique(fwdF);
+    yVals = unique(ctrF);
+
+    nx = numel(xVals);
+    ny = numel(yVals);
+
+    [X, Y] = meshgrid(xVals, yVals);
+
+    Z1 = nan(ny, nx);
+    Z2 = nan(ny, nx);
+    Z3 = nan(ny, nx);
+
+    for i = 1:n
+        ix = find(xVals == fwdF(i));
+        iy = find(yVals == ctrF(i));
+
+        Z1(iy, ix) = d1(i);
+        Z2(iy, ix) = d2(i);
+        Z3(iy, ix) = d3(i);
+    end
+
+    % -----------------------
+    % Normalize
+    % -----------------------
+    scale = max([Z1(:); Z2(:); Z3(:)], [], 'omitnan');
+
+    Z1 = Z1 / scale;
+    Z2 = Z2 / scale;
+    Z3 = Z3 / scale;
+
+    % -----------------------
+    % Bar geometry settings
+    % -----------------------
+    dx = 0.2;   % bar width in x
+    dy = 0.2;   % bar width in y
+
+    figure; hold on; grid on;
+
+    % Colors (fixed per metric)
+    c1 = [0.2 0.4 0.9];   % blue
+    c2 = [0.9 0.4 0.2];   % red/orange
+    c3 = [0.2 0.7 0.3];   % green
+
+    % -----------------------
+    % Helper to draw bars
+    % -----------------------
+    drawBars(Z1, -dx, 0, c1, xVals, yVals, dx, dy);
+    drawBars(Z2,  0,   0, c2, xVals, yVals, dx, dy);
+    drawBars(Z3,  dx,  0, c3, xVals, yVals, dx, dy);
+
+    xlabel('fwdF');
+    ylabel('ctrF');
+    zlabel('Normalized value');
+
+    view(45, 30);
+
+end
+
+
+---
+
+🔧 Helper function (core of the plot)
+
+function drawBars(Z, xOffset, yOffset, color, xVals, yVals, dx, dy)
+
+    [ny, nx] = size(Z);
+
+    for i = 1:nx
+        for j = 1:ny
+
+            if isnan(Z(j,i))
+                continue
+            end
+
+            x = xVals(i) + xOffset;
+            y = yVals(j) + yOffset;
+            z = Z(j,i);
+
+            % cube vertices
+            X = [x x+dx x+dx x x x+dx x+dx x];
+            Y = [y y y+dy y+dy y y y+dy y+dy];
+            Zc = [0 0 0 0 z z z z];
+
+            % faces
+            F = [
+                1 2 3 4;
+                5 6 7 8;
+                1 2 6 5;
+                2 3 7 6;
+                3 4 8 7;
+                4 1 5 8
+            ];
+
+            patch('Vertices',[X' Y' Zc'], ...
+                  'Faces',F, ...
+                  'FaceColor',color, ...
+                  'EdgeColor','k', ...
+                  'FaceAlpha',0.85);
+        end
+    end
+end
+
+
+---
+
+📌 What this gives you
+
+At each grid point:
+
+You now get:
+
+🔵 dia1 bar (left-shifted)
+
+🔴 dia2 bar (centered)
+
+🟢 dia3 bar (right-shifted)
+
+
+Properties:
+
+Same color always = same metric
+
+Repeated colors across grid (consistent encoding)
+
+True grouped 3D structure (not bar3 hack)
+
+Clean geometric control
+
+
+
+---
+
+⚠️ Why not bar3?
+
+MATLAB bar3:
+
+cannot group bars per coordinate pair cleanly
+
+assumes matrix rows = Y slices (not grouped categorical pairs)
+
+makes offset control very limited
+
+
+Your requirement is closer to a voxel / cuboid rendering problem, not a matrix bar plot.
+
+
+---
+
+If you want next-level improvement
+
+I can extend this into:
+
+interactive rotation + hover values
+
+automatic spacing optimization (avoid overlap for dense grids)
+
+animation over sensitivity parameters
+
+exporting publication-quality figures (IEEE style)
+
+
+Just tell me.
 function plotSensitivityBar3(results)
 % results: 1×n struct array with fields:
 % results(i).crit.fwdF
