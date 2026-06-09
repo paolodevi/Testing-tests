@@ -1,3 +1,65 @@
+function metric = diamondMetric(x,y,diamond)
+
+    % Ensure column vectors
+    x = x(:);
+    y = y(:);
+
+    xv = diamond(:,1);
+    yv = diamond(:,2);
+
+    % Close polygon if necessary
+    if xv(1) ~= xv(end) || yv(1) ~= yv(end)
+        xv(end+1) = xv(1);
+        yv(end+1) = yv(1);
+    end
+
+    % Inside/on test
+    [in,on] = inpolygon(x,y,xv,yv);
+
+    nPts = numel(x);
+    dmin = inf(nPts,1);
+
+    % Distance to every polygon segment
+    for k = 1:length(xv)-1
+
+        x1 = xv(k);
+        y1 = yv(k);
+
+        x2 = xv(k+1);
+        y2 = yv(k+1);
+
+        dx = x2 - x1;
+        dy = y2 - y1;
+
+        segLen2 = dx^2 + dy^2;
+
+        t = ((x-x1)*dx + (y-y1)*dy) / segLen2;
+        t = max(0,min(1,t));
+
+        xp = x1 + t*dx;
+        yp = y1 + t*dy;
+
+        d = hypot(x-xp,y-yp);
+
+        dmin = min(dmin,d);
+    end
+
+    % Signed distances
+    sd = dmin;
+
+    sd(in) = -sd(in);
+    sd(on) = 0;
+
+    % Metric for the entire curve
+    metric = min(sd);
+
+end
+
+
+
+
+
+
 Points 5 (animation) and 6 (shape-density map) are particularly useful when the shape itself matters, not just a scalar quantity like area.
 
 5. Animation of Patch Evolution
