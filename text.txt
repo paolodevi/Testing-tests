@@ -1,126 +1,225 @@
-Yes. For a production-quality solution, I would not rely solely on regexes. MATLAB already has a dependency engine that is surprisingly good at resolving function calls across folders, packages, classes, and local functions.
+Points 5 (animation) and 6 (shape-density map) are particularly useful when the shape itself matters, not just a scalar quantity like area.
 
-The code below:
+5. Animation of Patch Evolution
 
-Starts from a top-level function/file
+The goal is to understand how the boundary deforms as fwdF and ctrF change.
 
-Recursively discovers project dependencies
+There are several ways to do this.
 
-Builds a parent → child call graph
+Option A: Sweep one parameter, hold the other fixed
 
-Prevents infinite recursion
+Suppose:
 
-Prints a Linux-style tree in the Command Window
+fwdF = [0.8 1.0 1.2 1.4];
+ctrF = [0.5 1.0 1.5 2.0];
 
-Marks repeated nodes and recursive references
+and your patches are stored as
 
-Excludes MATLAB/toolbox functions if desired
+x{i,j}
+y{i,j}
+
+where:
+
+i -> fwdF
+j -> ctrF
+
+Choose a fixed ctrF index:
+
+j0 = 2;
+
+figure
+
+for i = 1:length(fwdF)
+
+    clf
+
+    patch(x{i,j0},y{i,j0}, ...
+          'b', ...
+          'FaceAlpha',0.3, ...
+          'LineWidth',2)
+
+    axis equal
+    grid on
+
+    title(sprintf( ...
+        'fwdF = %.2f   ctrF = %.2f', ...
+        fwdF(i),ctrF(j0)))
+
+    drawnow
+    pause(0.2)
+
+end
+
+You immediately see whether the patch:
+
+expands,
+
+contracts,
+
+translates,
+
+rotates,
+
+changes topology.
 
 
 
 ---
 
-Main script
+Option B: Animate through the full parameter grid
 
-Save as:
+Think of the simulation results as a movie:
 
-buildFunctionTree.m
+figure
 
-function G = buildFunctionTree(rootFile)
+for i = 1:length(fwdF)
 
-    arguments
-        rootFile (1,:) char
-    end
+    for j = 1:length(ctrF)
 
-    rootFile = which(rootFile);
+        clf
 
-    if isempty(rootFile)
-        error('Cannot locate file.');
-    end
+        patch(x{i,j},y{i,j}, ...
+              'b', ...
+              'FaceAlpha',0.3)
 
-    graphMap = containers.Map;
-    visited = containers.Map;
+        axis equal
+        grid on
 
-    buildNode(rootFile);
+        title(sprintf( ...
+            'fwdF = %.2f   ctrF = %.2f', ...
+            fwdF(i),ctrF(j)))
 
-    fprintf('\n');
-    fprintf('FUNCTION TREE\n');
-    fprintf('=============\n\n');
-
-    printNode(rootFile,'',true,{});
-
-    G = graphMap;
-
-    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-    function buildNode(file)
-
-        if isKey(visited,file)
-            return
-        end
-
-        visited(file) = true;
-
-        children = getDirectCalls(file);
-
-        graphMap(file) = children;
-
-        for i = 1:numel(children)
-
-            child = children{i};
-
-            if exist(child,'file')
-                buildNode(child);
-            end
-
-        end
+        drawnow
 
     end
 
-    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+end
 
-    function printNode(node,prefix,isLast,pathStack)
+This is effectively a walk through parameter space.
 
-        [~,name] = fileparts(node);
 
-        if isempty(prefix)
-            fprintf('%s\n',name);
-        else
+---
 
-            if isLast
-                fprintf('%s└── %s\n',prefix,name);
-            else
-                fprintf('%s├── %s\n',prefix,name);
-            end
+Option C: Show previous patches as "ghosts"
 
-        end
+This is often much more informative.
 
-        if any(strcmp(pathStack,node))
-            fprintf('%s    [recursive]\n',prefix);
-            return
-        end
+figure
+hold on
 
-        if ~isKey(graphMap,node)
-            return
-        end
+for i = 1:length(fwdF)
 
-        children = graphMap(node);
+    patch(x{i,j0},y{i,j0}, ...
+        'b', ...
+        'FaceAlpha',0.05, ...
+        'EdgeColor',[0.6 0.6 0.6]);
 
-        if isLast
-            nextPrefix = [prefix '    '];
-        else
-            nextPrefix = [prefix '│   '];
-        end
+end
 
-        for k = 1:length(children)
+for i = 1:length(fwdF)
 
-            printNode( ...
-                children{k}, ...
-                nextPrefix, ...
-                k==length(children), ...
-                [pathStack {node}] );
+    h = patch(x{i,j0},y{i,j0}, ...
+        'r', ...
+        'FaceAlpha',0.4);
 
-        end
+    drawnow
+
+    pause(0.2)
+
+    delete(h)
+
+end
+
+The grey patches provide context while the red patch moves through the sequence.
+
+This often reveals trends that are difficult to notice in a simple animation.
+
+
+---
+
+6. Shape Density / Occupancy Map
+
+This is a very powerful visualization.
+
+Interpretation
+
+Imagine laying all patches on top of one another.
+
+For every point in the plane, ask:
+
+> How many parameter combinations contain this point?
+
+
+
+The result is a density map.
+
+
+---
+
+Example
+
+Suppose you have 100 simulations.
+
+For one location:
+
+(x,y)
+
+contained in 100 patches → density = 100
+
+contained in 50 patches → density = 50
+
+contained in 0 patches → density = 0
+
+
+Plotting this creates a map showing:
+
+core regions that always exist,
+
+marginal regions that only appear for certain parameter values.
+
+
+
+---
+
+Step 1: Build a Common Grid
+
+Determine plotting limits:
+
+xmin = min(cellfun(@min,x(:)));
+xmax = max(cellfun(@max,x(:)));
+
+ymin = min(cellfun(@min,y(:)));
+ymax = max(cellfun(@max,y(:)));
+
+Create a grid:
+
+Nx = 300;
+Ny = 300;
+
+[X,Y] = meshgrid( ...
+    linspace(xmin,xmax,Nx), ...
+    linspace(ymin,ymax,Ny));
+
+
+---
+
+Step 2: Accumulate Occupancy
+
+Initialize:
+
+density = zeros(size(X));
+
+Loop through all simulations:
+
+for i = 1:length(fwdF)
+
+    for j = 1:length(ctrF)
+
+        mask = inpolygon( ...
+            X,Y, ...
+            x{i,j},y{i,j});
+
+        density = density + mask;
 
     end
 
@@ -129,104 +228,99 @@ end
 
 ---
 
-Dependency extraction
+Step 3: Normalize
 
-Save as:
+Convert to percentage:
 
-getDirectCalls.m
+density = density / ...
+          (length(fwdF)*length(ctrF));
 
-function children = getDirectCalls(file)
+Now:
 
-    children = {};
-
-    try
-
-        depFiles = matlab.codetools.requiredFilesAndProducts(file);
-
-    catch
-
-        warning('Failed on %s',file);
-        return
-
-    end
-
-    depFiles(strcmp(depFiles,file)) = [];
-
-    currentFolder = fileparts(file);
-
-    keep = false(size(depFiles));
-
-    for i = 1:numel(depFiles)
-
-        depFolder = fileparts(depFiles{i});
-
-        keep(i) = startsWith(depFolder,currentFolder);
-
-    end
-
-    depFiles = depFiles(keep);
-
-    children = depFiles;
-
-end
+1.0 = always occupied
+0.5 = occupied half the time
+0.0 = never occupied
 
 
 ---
 
-Usage
+Step 4: Plot
 
-Suppose your entry point is:
+figure
 
-mainSimulation.m
+imagesc( ...
+    X(1,:), ...
+    Y(:,1), ...
+    density)
+
+axis xy
+axis equal
+
+xlabel('x')
+ylabel('y')
+
+colorbar
+
+The colorbar becomes:
+
+0     Never appears
+0.5   Appears in 50% of cases
+1.0   Appears in every case
+
+
+---
+
+Variant: Weight by Sensitivity
+
+Instead of counting every patch equally, weight them by parameter distance from a nominal design.
+
+For example:
+
+w = sqrt( ...
+    ((fwdF(i)-fwd_nom)/dfwd).^2 + ...
+    ((ctrF(j)-ctr_nom)/dctr).^2 );
 
 Then:
 
-buildFunctionTree('mainSimulation')
+density = density + w*mask;
 
-Example output:
-
-mainSimulation
-├── loadGeometry
-│   ├── readMesh
-│   └── readSettings
-├── runSolver
-│   ├── initializeFlow
-│   │   └── loadBoundaryConditions
-│   ├── computeResidual
-│   └── updateSolution
-└── postProcess
-    ├── computeEfficiency
-    └── generatePlots
+This highlights which parts of the region are influenced most strongly by parameter changes.
 
 
 ---
 
-More robust version (recommended)
+A Hybrid Visualization I Would Recommend
 
-The limitation of requiredFilesAndProducts() is that it gives all downstream dependencies, not necessarily the immediate caller→callee relationship.
+For sensitivity studies, I often find the following combination most revealing:
 
-For a truly accurate call tree you should use:
+1. Plot the nominal patch in black.
 
-mtree
 
-to parse each file and extract only direct function calls.
+2. Plot the occupancy map as a colored background.
 
-The workflow becomes:
 
-main
- ├── foo
- │    ├── bar
- │    └── baz
- └── qux
+3. Overlay the outer envelope of all patches.
 
-rather than:
 
-main
- ├── foo
- ├── bar
- ├── baz
- └── qux
 
-which is what dependency analysis often produces.
+Conceptually:
 
-For a very large aerospace/scientific codebase, I would build the mtree version instead. It is significantly more work (~200–300 lines) but produces a true call graph rather than a dependency list. If your code contains lots of utility functions and deep recursion, the mtree approach is the one worth implementing.
++-------------------------+
+|      envelope           |
+|   ##################    |
+|   #### nominal ####     |
+|   ##################    |
++-------------------------+
+
+where the color intensity indicates how frequently that region occurs.
+
+This immediately shows:
+
+the robust core region,
+
+the sensitive boundary regions,
+
+the overall variation envelope.
+
+
+For design-space, stability-region, or feasible-region studies, that single figure is often more informative than dozens of individual patch plots.
