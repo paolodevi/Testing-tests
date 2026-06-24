@@ -1,38 +1,154 @@
-% Find all open figures
-figs = findall(groot, 'Type', 'figure');
+function cards = readNastranBDF(filename)
+%READNASTRANBDF Read a Nastran fixed-field BDF/DAT file.
+%
+% cards = readNastranBDF(filename)
+%
+% Output:
+%   cards{i} = cell array containing the fields of the i-th card.
+%
+% Example:
+%   cards = readNastranBDF('model.bdf');
+%   disp(cards{1})
 
-for k = 1:numel(figs)
+fid = fopen(filename,'r');
 
-    fig = figs(k);
+if fid == -1
+    error('Could not open file: %s',filename);
+end
 
-    % Get current axes in the figure
-    ax = get(fig, 'CurrentAxes');
+cards = {};
+currentCard = {};
 
-    % Default filename if no title exists
-    filename = sprintf('Figure_%d', fig.Number);
+cleanupObj = onCleanup(@() fclose(fid));
 
-    if ~isempty(ax)
-        t = get(get(ax, 'Title'), 'String');
+while ~feof(fid)
 
-        % Handle title being a cell array
-        if iscell(t)
-            t = strjoin(t, '_');
-        end
+    line = fgetl(fid);
 
-        if ~isempty(t)
-            filename = t;
-        end
+    if ~ischar(line)
+        continue
     end
 
-    % Replace spaces with underscores
-    filename = strrep(filename, ' ', '_');
+    % Skip empty lines
+    if isempty(strtrim(line))
+        continue
+    end
 
-    % Remove characters invalid for filenames
-    filename = regexprep(filename, '[<>:"/\\|?*]', '');
+    % Skip comments
+    if startsWith(strtrim(line),'$')
+        continue
+    end
 
-    % Save figure
-    savefig(fig, [filename '.fig']);
+    % Pad to multiple of 8 chars
+    nFields = ceil(length(line)/8);
+    line = pad(line,nFields*8);
 
-    fprintf('Saved: %s.fig\n', filename);
+    % Split into 8-char fields
+    fields = cell(1,nFields);
+    for k = 1:nFields
+        idx1 = (k-1)*8 + 1;
+        idx2 = k*8;
+        fields{k} = line(idx1:idx2);
+    end
+
+    firstField = strtrim(fields{1});
+    lastField  = strtrim(fields{end});
+
+    startsContinuation = strcmp(firstField,'+');
+    endsContinuation   = strcmp(lastField,'+');
+
+    if startsContinuation
+        fields = fields(2:end);
+    end
+
+    parsedFields = cell(size(fields));
+
+    for k = 1:numel(fields)
+        parsedFields{k} = parseField(fields{k});
+    end
+
+    currentCard = [currentCard parsedFields]; %#ok<AGROW>
+
+    if endsContinuation
+
+        % Remove trailing continuation marker
+        if ~isempty(currentCard)
+            lastVal = currentCard{end};
+
+            if ischar(lastVal) && strcmp(lastVal,'+')
+                currentCard(end) = [];
+            end
+        end
+
+    else
+
+        % Remove trailing empty fields
+        while ~isempty(currentCard)
+            val = currentCard{end};
+
+            if isempty(val)
+                currentCard(end) = [];
+            else
+                break
+            end
+        end
+
+        cards{end+1} = currentCard; %#ok<AGROW>
+        currentCard = {};
+    end
+end
+
+% Safety in case file ends during a continuation
+if ~isempty(currentCard)
+    cards{end+1} = currentCard;
+end
+
+end
+
+
+function value = parseField(field)
+% Convert a Nastran field to MATLAB type.
+
+field = strtrim(field);
+
+if isempty(field)
+    value = [];
+    return
+end
+
+% Integer
+tmp = str2double(field);
+
+if ~isnan(tmp)
+
+    if abs(tmp-round(tmp)) < eps(max(abs(tmp),1))
+        value = round(tmp);
+    else
+        value = tmp;
+    end
+
+    return
+end
+
+% Nastran compact exponent:
+% 1.23+5 -> 1.23E+5
+% 7.-3   -> 7.E-3
+
+expr = '^([+-]?\d*\.?\d*)([+-]\d+)$';
+tokens = regexp(field,expr,'tokens','once');
+
+if ~isempty(tokens)
+
+    candidate = [tokens{1} 'E' tokens{2}];
+    tmp = str2double(candidate);
+
+    if ~isnan(tmp)
+        value = tmp;
+        return
+    end
+end
+
+% Text field
+value = field;
 
 end
