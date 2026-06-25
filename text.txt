@@ -1,154 +1,58 @@
-function cards = readNastranBDF(filename)
-%READNASTRANBDF Read a Nastran fixed-field BDF/DAT file.
-%
-% cards = readNastranBDF(filename)
-%
-% Output:
-%   cards{i} = cell array containing the fields of the i-th card.
-%
-% Example:
-%   cards = readNastranBDF('model.bdf');
-%   disp(cards{1})
+%% Inputs
+CG  = [...];      % [x y z]
+Icg = [...];      % 3x3 inertia tensor
 
-fid = fopen(filename,'r');
+p1 = [...];
+p2 = [...];       % hinge origin
+p3 = [...];
 
-if fid == -1
-    error('Could not open file: %s',filename);
+M = ...;          % total mass
+
+%% Build hinge reference frame
+
+% Local Y axis along hinge line
+ey = (p3 - p1);
+ey = ey/norm(ey);
+
+% Use global Z as reference
+zg = [0 0 1];
+
+% If hinge almost parallel to Z use X instead
+if abs(dot(ey,zg)) > 0.99
+    zg = [1 0 0];
 end
 
-cards = {};
-currentCard = {};
+% Complete right-handed system
+ex = cross(zg,ey);
+ex = ex/norm(ex);
 
-cleanupObj = onCleanup(@() fclose(fid));
+ez = cross(ey,ex);
+ez = ez/norm(ez);
 
-while ~feof(fid)
+% Rotation matrix
+% Columns = local axes expressed in global coordinates
+R = [ex(:) ey(:) ez(:)];
 
-    line = fgetl(fid);
+%% CG in hinge coordinates
 
-    if ~ischar(line)
-        continue
-    end
+d = CG(:) - p2(:);
 
-    % Skip empty lines
-    if isempty(strtrim(line))
-        continue
-    end
+CG_hinge = R.'*d;
 
-    % Skip comments
-    if startsWith(strtrim(line),'$')
-        continue
-    end
+%% Inertia translated from CG to hinge origin
 
-    % Pad to multiple of 8 chars
-    nFields = ceil(length(line)/8);
-    line = pad(line,nFields*8);
+S = (d.'*d)*eye(3) - d*d.';
 
-    % Split into 8-char fields
-    fields = cell(1,nFields);
-    for k = 1:nFields
-        idx1 = (k-1)*8 + 1;
-        idx2 = k*8;
-        fields{k} = line(idx1:idx2);
-    end
+I_hinge_global = Icg + M*S;
 
-    firstField = strtrim(fields{1});
-    lastField  = strtrim(fields{end});
+%% Rotate inertia into hinge axes
 
-    startsContinuation = strcmp(firstField,'+');
-    endsContinuation   = strcmp(lastField,'+');
+I_hinge = R.'*I_hinge_global*R;
 
-    if startsContinuation
-        fields = fields(2:end);
-    end
+%% Results
 
-    parsedFields = cell(size(fields));
+disp('CG in hinge frame')
+disp(CG_hinge)
 
-    for k = 1:numel(fields)
-        parsedFields{k} = parseField(fields{k});
-    end
-
-    currentCard = [currentCard parsedFields]; %#ok<AGROW>
-
-    if endsContinuation
-
-        % Remove trailing continuation marker
-        if ~isempty(currentCard)
-            lastVal = currentCard{end};
-
-            if ischar(lastVal) && strcmp(lastVal,'+')
-                currentCard(end) = [];
-            end
-        end
-
-    else
-
-        % Remove trailing empty fields
-        while ~isempty(currentCard)
-            val = currentCard{end};
-
-            if isempty(val)
-                currentCard(end) = [];
-            else
-                break
-            end
-        end
-
-        cards{end+1} = currentCard; %#ok<AGROW>
-        currentCard = {};
-    end
-end
-
-% Safety in case file ends during a continuation
-if ~isempty(currentCard)
-    cards{end+1} = currentCard;
-end
-
-end
-
-
-function value = parseField(field)
-% Convert a Nastran field to MATLAB type.
-
-field = strtrim(field);
-
-if isempty(field)
-    value = [];
-    return
-end
-
-% Integer
-tmp = str2double(field);
-
-if ~isnan(tmp)
-
-    if abs(tmp-round(tmp)) < eps(max(abs(tmp),1))
-        value = round(tmp);
-    else
-        value = tmp;
-    end
-
-    return
-end
-
-% Nastran compact exponent:
-% 1.23+5 -> 1.23E+5
-% 7.-3   -> 7.E-3
-
-expr = '^([+-]?\d*\.?\d*)([+-]\d+)$';
-tokens = regexp(field,expr,'tokens','once');
-
-if ~isempty(tokens)
-
-    candidate = [tokens{1} 'E' tokens{2}];
-    tmp = str2double(candidate);
-
-    if ~isnan(tmp)
-        value = tmp;
-        return
-    end
-end
-
-% Text field
-value = field;
-
-end
+disp('Inertia about hinge origin in hinge axes')
+disp(I_hinge)
