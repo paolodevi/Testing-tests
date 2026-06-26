@@ -1,58 +1,13 @@
-%% Inputs
-CG  = [...];      % [x y z]
-Icg = [...];      % 3x3 inertia tensor
+x = linspace(0,10,200);
+y = sin(x);
+crit = cos(x);    % Example quantity to color by
 
-p1 = [...];
-p2 = [...];       % hinge origin
-p3 = [...];
+surface([x; x], [y; y], zeros(2,length(x)), ...
+        [crit; crit], ...
+        'FaceColor','none', ...
+        'EdgeColor','interp', ...
+        'LineWidth',2);
 
-M = ...;          % total mass
-
-%% Build hinge reference frame
-
-% Local Y axis along hinge line
-ey = (p3 - p1);
-ey = ey/norm(ey);
-
-% Use global Z as reference
-zg = [0 0 1];
-
-% If hinge almost parallel to Z use X instead
-if abs(dot(ey,zg)) > 0.99
-    zg = [1 0 0];
-end
-
-% Complete right-handed system
-ex = cross(zg,ey);
-ex = ex/norm(ex);
-
-ez = cross(ey,ex);
-ez = ez/norm(ez);
-
-% Rotation matrix
-% Columns = local axes expressed in global coordinates
-R = [ex(:) ey(:) ez(:)];
-
-%% CG in hinge coordinates
-
-d = CG(:) - p2(:);
-
-CG_hinge = R.'*d;
-
-%% Inertia translated from CG to hinge origin
-
-S = (d.'*d)*eye(3) - d*d.';
-
-I_hinge_global = Icg + M*S;
-
-%% Rotate inertia into hinge axes
-
-I_hinge = R.'*I_hinge_global*R;
-
-%% Results
-
-disp('CG in hinge frame')
-disp(CG_hinge)
-
-disp('Inertia about hinge origin in hinge axes')
-disp(I_hinge)
+colorbar
+xlabel('x')
+ylabel('y')
