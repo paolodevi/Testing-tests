@@ -1,13 +1,171 @@
-x = linspace(0,10,200);
-y = sin(x);
-crit = cos(x);    % Example quantity to color by
+function critViewer(crit)
+% Interactive viewer for the CRIT structure.
+%
+% Usage:
+%   critViewer(crit)
 
-surface([x; x], [y; y], zeros(2,length(x)), ...
-        [crit; crit], ...
-        'FaceColor','none', ...
-        'EdgeColor','interp', ...
-        'LineWidth',2);
+%% Extract all flight conditions
 
-colorbar
-xlabel('x')
-ylabel('y')
+H = unique(arrayfun(@(x) x.cond.h, crit));
+M = unique(arrayfun(@(x) x.cond.m, crit));
+N = unique(arrayfun(@(x) x.cond.n, crit));
+A = unique(arrayfun(@(x) x.cond.a, crit));
+
+%% Create window
+
+fig = uifigure( ...
+    'Name','Criticality Viewer', ...
+    'Position',[100 100 1300 750]);
+
+%% Dropdown labels
+
+uilabel(fig,'Text','Altitude',...
+    'Position',[20 715 70 20]);
+
+uilabel(fig,'Text','Mach',...
+    'Position',[150 715 50 20]);
+
+uilabel(fig,'Text','Nz',...
+    'Position',[280 715 40 20]);
+
+uilabel(fig,'Text','AoA',...
+    'Position',[410 715 40 20]);
+
+%% Dropdowns
+
+ddH = uidropdown(fig,...
+    'Items',string(H),...
+    'Value',string(H(1)),...
+    'Position',[20 690 100 25]);
+
+ddM = uidropdown(fig,...
+    'Items',string(M),...
+    'Value',string(M(1)),...
+    'Position',[150 690 100 25]);
+
+ddN = uidropdown(fig,...
+    'Items',string(N),...
+    'Value',string(N(1)),...
+    'Position',[280 690 100 25]);
+
+ddA = uidropdown(fig,...
+    'Items',string(A),...
+    'Value',string(A(1)),...
+    'Position',[410 690 100 25]);
+
+%% Axes
+
+axMag = uiaxes(fig,...
+    'Position',[40 390 550 250]);
+
+title(axMag,'Magnitude')
+
+axPha = uiaxes(fig,...
+    'Position',[700 390 550 250]);
+
+title(axPha,'Phase')
+
+axCrit = uiaxes(fig,...
+    'Position',[200 60 900 250]);
+
+title(axCrit,'Criticality')
+
+%% Callback connections
+
+ddH.ValueChangedFcn = @(~,~) updatePlots();
+ddM.ValueChangedFcn = @(~,~) updatePlots();
+ddN.ValueChangedFcn = @(~,~) updatePlots();
+ddA.ValueChangedFcn = @(~,~) updatePlots();
+
+%% Initial plot
+
+updatePlots()
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    function updatePlots()
+
+        h = str2double(ddH.Value);
+        m = str2double(ddM.Value);
+        n = str2double(ddN.Value);
+        a = str2double(ddA.Value);
+
+        idx = find( ...
+            arrayfun(@(x) ...
+            x.cond.h==h && ...
+            x.cond.m==m && ...
+            x.cond.n==n && ...
+            x.cond.a==a,crit));
+
+        if isempty(idx)
+
+            cla(axMag)
+            cla(axPha)
+            cla(axCrit)
+
+            title(axMag,'No matching flight condition')
+            return
+
+        end
+
+        c = crit(idx(1));
+
+        %% Magnitude
+
+        cla(axMag)
+
+        plot(axMag,c.f,c.mag,...
+            'LineWidth',2)
+
+        grid(axMag,'on')
+
+        xlabel(axMag,'Frequency')
+
+        ylabel(axMag,'Magnitude')
+
+        %% Phase
+
+        cla(axPha)
+
+        plot(axPha,c.f,c.pha,...
+            'LineWidth',2)
+
+        grid(axPha,'on')
+
+        xlabel(axPha,'Frequency')
+
+        ylabel(axPha,'Phase')
+
+        %% Criticality
+
+        cla(axCrit)
+
+        hold(axCrit,'on')
+
+        plot(axCrit,c.dia1.f,c.dia1.c,...
+            'LineWidth',2)
+
+        plot(axCrit,c.dia2.f,c.dia2.c,...
+            'LineWidth',2)
+
+        plot(axCrit,c.dia3.f,c.dia3.c,...
+            'LineWidth',2)
+
+        hold(axCrit,'off')
+
+        grid(axCrit,'on')
+
+        xlabel(axCrit,'Frequency')
+
+        ylabel(axCrit,'Criticality')
+
+        legend(axCrit,...
+            {'Dia1','Dia2','Dia3'},...
+            'Location','best')
+
+        sgtitle(sprintf(...
+            'Altitude = %.0f    Mach = %.2f    Nz = %.2f    AoA = %.2f',...
+            h,m,n,a));
+
+    end
+
+end
