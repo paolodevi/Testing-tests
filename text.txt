@@ -1,14 +1,108 @@
-function s = num2str8(x)
+That actually makes the problem even nicer because you don't need to interpolate between V0 and V1. You simply evaluate the modal displacement at the current time.
 
-    % Number of characters before the decimal point
-    intChars = length(sprintf('%.0f', abs(fix(x))));
-    if x < 0
-        intChars = intChars + 1;   % Account for minus sign
-    end
+If V1 is the modal shape (or equivalently V1-V0 is), then the displacement is
 
-    % Maximum decimals that fit in 8 characters
-    decimals = max(1, 8 - intChars - 1);  % -1 for decimal point
+\mathbf{x}(t)=\mathbf{x}_0 + A\sin(2\pi f t)\,\boldsymbol{\phi}
 
-    s = sprintf(['%8.' num2str(decimals) 'f'], x);
+where:
 
+A is your visualization scale factor,
+
+f is the eigenfrequency (Hz),
+
+φ = V1-V0 is the mode shape.
+
+
+Then you only update the vertices every frame.
+
+phi = V1 - V0;      % mode shape
+scale = 50;         % visualization scale
+
+h = patch(...
+    'Faces',Faces,...
+    'Vertices',V0,...
+    'FaceColor',[0.8 0.8 1],...
+    'EdgeColor','none');
+
+axis equal
+camlight
+lighting gouraud
+
+fps = 60;
+dt = 1/fps;
+
+V = V0;
+t = 0;
+
+while ishandle(h)
+
+    a = scale*sin(2*pi*f*t);
+
+    V(:) = V0 + a*phi;
+
+    h.Vertices = V;
+
+    drawnow limitrate nocallbacks
+
+    t = t + dt;
 end
+
+An even faster implementation
+
+Notice that every frame you're computing
+
+V0 + a*phi
+
+which is 3N multiplications and 3N additions.
+
+Instead, since only the scalar amplitude changes, you can let MATLAB's highly optimized BLAS routines do the work:
+
+V = V0;
+
+while ishandle(h)
+
+    a = scale*sin(omega*t);   % omega = 2*pi*f
+
+    V = V0 + phi*a;
+
+    h.Vertices = V;
+
+    drawnow limitrate nocallbacks
+
+    t = t + dt;
+end
+
+Because a is a scalar, phi*a is very efficient.
+
+If you have several eigenmodes
+
+This scales naturally:
+
+V = V0;
+
+for i = 1:nModes
+    V = V + Phi(:,:,i) * (A(i)*sin(omega(i)*t + phase(i)));
+end
+
+h.Vertices = V;
+
+where Phi(:,:,i) is the i-th mode shape.
+
+
+---
+
+One more trick for real-time performance
+
+Since you're working with eigenmodes, there is no need to tie the animation to a fixed FPS. Instead of incrementing t by dt, use the actual elapsed wall-clock time:
+
+tic
+while ishandle(h)
+
+    t = toc;
+
+    h.Vertices = V0 + phi*(scale*sin(omega*t));
+
+    drawnow limitrate nocallbacks
+end
+
+This way the animation frequency is exactly f, regardless of whether MATLAB is rendering at 30, 60, or 120 FPS. The motion remains physically correct, and the animation is as smooth as your hardware allows. This is generally the approach I recommend for modal animation viewers.
