@@ -1,28 +1,396 @@
-function progressbar(i, N)
+EQUIVALENT PITCH DAMPING IDENTIFICATION FOR A REDUCED-ORDER LONGITUDINAL LANDING MODEL
+======================================================================================
 
-    persistent lastLength
+1. OBJECTIVE
+------------
 
-    if i == 1
-        lastLength = 0;
-    end
+The objective is to replace a high-fidelity longitudinal landing simulation with a
+simplified linear dynamic model that can be used for fast simulations, parameter
+studies, optimization, Monte Carlo analyses or preliminary design activities.
 
-    pct = 100*i/N;
-    width = 40;
-    n = round(width*i/N);
+The original model includes several strongly coupled subsystems:
 
-    str = sprintf('[%s%s] %6.2f%% (%d/%d)', ...
-        repmat('=',1,n), repmat(' ',1,width-n), pct, i, N);
+- Aircraft rigid-body longitudinal dynamics
+- Aerodynamic forces and moments
+- Landing gear dynamics (oleo, tires, structural compliance)
+- Flight Control System (FCS)
+- Gravity
+- Possible structural flexibility
 
-    % Erase previous line
-    fprintf(repmat('\b',1,lastLength));
+Because all of these systems interact during touchdown, the resulting pitching motion
+contains damping contributions from several physical mechanisms. The purpose is not
+to identify the aerodynamic pitch damping derivative alone, but rather to identify
+an equivalent damping that reproduces the overall dynamic behavior of the complete
+system.
 
-    % Print new line
-    fprintf('%s', str);
+The final product should therefore be a reduced-order model capable of reproducing
+the pitch response of the original simulation over the range of landing conditions
+of interest.
 
-    lastLength = length(str);
 
-    if i == N
-        fprintf('\n');
-        clear progressbar
-    end
-end
+2. WHY A SINGLE DAMPING COEFFICIENT DOES NOT EXIST
+-------------------------------------------------
+
+In classical flight dynamics, pitch damping is represented by the aerodynamic
+derivative Cm_q, which produces a pitching moment proportional to the pitch rate.
+
+    M_q = (dM/dq) q
+
+or, in non-dimensional form,
+
+    Cm = Cm0 + Cm_alpha * alpha + Cm_q * q + ...
+
+This description is valid only for small perturbations around a fixed trim condition.
+
+A landing impact is fundamentally different.
+
+During touchdown:
+
+- Airspeed changes continuously.
+- Angle of attack changes.
+- Landing gear compresses and rebounds.
+- Tire forces vary rapidly.
+- The FCS may command elevator inputs.
+- Load factor varies significantly.
+- Pitch rate can become relatively large.
+
+Consequently, the total pitching moment is
+
+    M_total =
+        M_aero
+      + M_gear
+      + M_gravity
+      + M_control
+      + ...
+
+Each contribution depends on different variables.
+
+For example,
+
+    M_aero = f(alpha, q, V, delta_e, ...)
+
+while
+
+    M_gear = f(stroke, stroke_rate, tire_force, ...)
+
+Therefore there is generally no constant coefficient satisfying
+
+    M_total = M0 + C q
+
+for every landing condition.
+
+The damping is nonlinear and varies throughout the touchdown event.
+
+
+3. WHAT SHOULD THE REDUCED MODEL REPRESENT?
+-------------------------------------------
+
+The objective is not to reproduce each physical subsystem individually.
+
+Instead, the reduced model should reproduce the overall aircraft motion.
+
+A suitable reduced-order model is
+
+    Iyy * theta_ddot
+    + C_eq * theta_dot
+    + K_eq * theta
+    = M_external
+
+where
+
+Iyy     = aircraft pitch inertia
+C_eq    = equivalent pitch damping
+K_eq    = equivalent pitch stiffness
+
+The equivalent damping should represent the combined effect of
+
+- aerodynamic damping
+- landing gear damping
+- tire damping
+- controller action
+- any additional dissipative mechanism
+
+without attempting to separate them.
+
+This is similar to equivalent damping used in structural dynamics, where several
+physical damping mechanisms are represented by one viscous damper.
+
+
+4. IDENTIFICATION OF EQUIVALENT PARAMETERS
+------------------------------------------
+
+For every landing simulation, extract
+
+- pitch angle          theta(t)
+- pitch rate           q(t)
+- pitch acceleration   q_dot(t)
+
+and, if available,
+
+- total pitching moment
+
+The rigid-body equation is
+
+    Iyy q_dot = M_total
+
+Assuming local linear behavior,
+
+    Iyy q_dot
+    =
+    a theta
+    +
+    b q
+    +
+    c
+
+where
+
+a = equivalent stiffness
+
+b = equivalent damping
+
+c = equilibrium offset
+
+The coefficients can be identified using least-squares regression over the portion
+of the simulation corresponding to the touchdown dynamics.
+
+This provides one equivalent damping coefficient for one landing condition.
+
+
+5. WHY MULTIPLE SIMULATIONS ARE NECESSARY
+-----------------------------------------
+
+Since the damping changes with operating conditions, repeating the identification
+for many landing cases will produce different values of C_eq.
+
+Rather than searching for one universal damping coefficient, the objective becomes
+the identification of a damping map.
+
+Each simulation produces
+
+    Landing conditions
+        ->
+    Equivalent damping
+
+The equivalent damping therefore becomes a function
+
+    C_eq = f(landing conditions)
+
+
+6. CHOICE OF INDEPENDENT VARIABLES
+---------------------------------
+
+The choice of independent variables is critical.
+
+The variables should strongly influence the pitch dynamics while remaining relatively
+few in number.
+
+A reasonable initial set is
+
+- aircraft mass
+- sink rate
+- touchdown load factor (Nz)
+
+These parameters directly influence the landing energy and therefore the dynamic
+response.
+
+Additional variables that may become important include
+
+- touchdown airspeed
+- pitch attitude
+- pitch rate at touchdown
+- angle of attack
+- center of gravity position
+- flap configuration
+- landing gear characteristics
+
+Sensitivity analyses can determine whether each variable significantly affects the
+identified damping.
+
+If a variable has negligible influence, it can be removed from the parameterization.
+
+
+7. BUILDING THE DAMPING MAP
+---------------------------
+
+For every simulation,
+
+    Inputs
+
+        Mass
+        Sink rate
+        Nz
+        ...
+
+    Output
+
+        C_eq
+
+After generating enough data, fit a response surface
+
+    C_eq = f(mass, sink rate, Nz)
+
+Possible fitting techniques include
+
+- linear regression
+- polynomial regression
+- response surface methodology
+- radial basis functions
+- Gaussian process regression
+- multidimensional interpolation
+
+The choice depends on the smoothness and complexity of the data.
+
+The resulting map allows the reduced model to automatically select an equivalent
+damping corresponding to the simulated landing condition.
+
+
+8. ALTERNATIVE IDENTIFICATION USING ENERGY
+------------------------------------------
+
+Instead of identifying damping from the equations of motion, an equivalent damping
+may be defined by requiring the reduced model to dissipate the same amount of energy
+as the original model.
+
+The energy dissipated during one oscillation is
+
+    DeltaE = integral(M dtheta)
+
+For a viscous damper
+
+    DeltaE
+    =
+    C_eq
+    integral(q² dt)
+
+Therefore
+
+    C_eq
+    =
+    DeltaE
+    /
+    integral(q² dt)
+
+This method is attractive because
+
+- it naturally accounts for nonlinear behavior
+- it avoids numerical differentiation
+- it produces one equivalent damping for the entire landing event
+
+rather than an instantaneous coefficient.
+
+This approach is commonly used in nonlinear structural dynamics.
+
+
+9. INSTANTANEOUS VS EVENT-EQUIVALENT DAMPING
+--------------------------------------------
+
+Two different concepts should be distinguished.
+
+Instantaneous damping
+
+- identified over small time windows
+- varies during touchdown
+- useful for understanding the physics
+- generally depends on the current operating point
+
+Event-equivalent damping
+
+- one value representing the entire landing
+- chosen to reproduce the overall response
+- more appropriate for simplified engineering models
+
+Since the objective is model reduction, the event-equivalent damping is generally
+the preferred quantity.
+
+
+10. VALIDATION OF THE REDUCED MODEL
+-----------------------------------
+
+Identifying equivalent damping is only the first step.
+
+The reduced model must then be validated against the original simulation.
+
+Validation quantities include
+
+- pitch angle history
+- pitch rate history
+- maximum pitch angle
+- maximum pitch rate
+- oscillation frequency
+- settling time
+- peak landing loads
+- energy dissipation
+
+The reduced model should reproduce these quantities with acceptable accuracy over
+the intended range of landing conditions.
+
+If significant discrepancies remain, additional state variables or nonlinear terms
+may be required.
+
+
+11. PROPOSED METHODOLOGY
+------------------------
+
+Step 1
+
+Generate a matrix of landing simulations covering the expected operational envelope.
+
+Step 2
+
+For every simulation, extract
+
+- theta(t)
+- q(t)
+- q_dot(t)
+- total pitching moment (if available)
+
+Step 3
+
+Identify
+
+- equivalent stiffness
+- equivalent damping
+
+using least-squares regression or energy equivalence.
+
+Step 4
+
+Associate every identified coefficient with the corresponding landing conditions.
+
+Step 5
+
+Construct response surfaces
+
+    C_eq = f(mass, sink rate, Nz)
+
+and, if necessary,
+
+    K_eq = g(mass, sink rate, Nz)
+
+Step 6
+
+Implement the reduced linear model using the identified parameters.
+
+Step 7
+
+Compare the reduced model with the original simulation over an independent set of
+landing cases.
+
+Step 8
+
+Evaluate the prediction errors and refine the parameterization if necessary.
+
+
+12. FINAL REMARKS
+-----------------
+
+The key point is that the objective is not to identify a classical aerodynamic pitch
+damping derivative (Cm_q). Instead, the goal is to identify an equivalent damping
+coefficient that encapsulates the combined dynamic effects of aerodynamics, landing
+gear, flight controls, and other dissipative mechanisms. Such a coefficient will
+not be universal but will depend on the landing conditions. Consequently, the most
+robust reduced-order model is expected to use a parameterized damping map rather
+than a single constant value. This approach preserves the computational efficiency
+of a linear model while retaining the essential dynamic behavior of the original
+high-fidelity landing simulation.
