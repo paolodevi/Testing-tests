@@ -1,1 +1,40 @@
-.
+Looking at this problem, the user is describing a classic aircraft parameter estimation task with some real complexity: closed-loop FCS effects on the aerodynamic moment, ground effect from the landing regime, and multiple mass/sink-rate cases that need to be reconciled into one consistent model. This is a domain-knowledge question (flight dynamics / system identification methodology) — no current events, no files to check, no visualization clearly warranted yet. I'll answer directly from expertise, organized enough to be navigable but as natural prose rather than a formal report, and flag the few consequential decision points (especially whether to include control-surface deflection as a regressor, and the α-vs-θ distinction) since those materially change the right approach. I'll close with one focused question rather than several, per guidance on keeping clarifying questions minimal.
+
+I will respond in English.
+
+Apologies — that tool call was unnecessary noise on my part. Let me give you the actual answer.
+
+What you're describing is a classic parameter estimation / system identification problem — and a fairly convenient version of it, since you already have the output (Cm) directly rather than having to infer it indirectly. That means a static regression (the "equation-error" approach used throughout aircraft parameter estimation) is enough; you don't need iterative output-error methods.
+
+**The decision that matters most is what goes into the model.** The FCS affects Cm indirectly — it moves the elevator/stabilizer, and that's what actually changes the aerodynamic moment. So you have two real options:
+
+- **Include control surface deflection δ as a regressor.** This recovers genuine open-loop aerodynamic derivatives (Cmα, Cmq, Cmδ...) that don't depend on your specific FCS tuning — more general, more trustworthy outside the exact scenarios you identified it from. The cost: to use this reduced model downstream, something still needs to drive δ, even a simplified FCS representation.
+- **Leave δ out and regress Cm on α, q (and maybe α̇) alone.** You get a fully self-contained state→moment map, easy to drop into a fast model with no FCS block at all. But the coefficients aren't true aero derivatives anymore — they're an "effective" fit that implicitly bakes in your FCS's response, trustworthy only for scenarios resembling the mass/sink-rate envelope you identified it on.
+
+If δ is something you can extract, I'd default to including it. Do you have elevator/stabilizer position in your dataset?
+
+**Use α, not θ, as the attitude regressor.** A purely aerodynamic moment responds to airflow angle relative to the airplane (α), not attitude relative to the earth (θ). Since θ = α + γ and flight-path angle γ is definitely not constant through a flare, θ correlates with α but imperfectly — fitting on θ partly learns your specific glideslope/flare shape instead of a transferable aerodynamic property. Related: since your mass cases will each trim at a slightly different α, fit on absolute state values rather than deviations from each run's own trim, or you lose the ability to compare cases on a common basis.
+
+**Model structure.** A standard longitudinal build-up is a reasonable starting point:
+
+$$C_m = C_{m_0} + C_{m_\alpha}\alpha + C_{m_q}\hat{q} + C_{m_{\dot\alpha}}\hat{\dot\alpha} + C_{m_\delta}\delta$$
+
+where $\hat{q} = q\bar{c}/2V$ and $\hat{\dot\alpha} = \dot\alpha\,\bar{c}/2V$ (the usual non-dimensionalization) — this matters because if you leave q and α̇ dimensional, their coefficients become secretly speed-dependent, and your different mass/speed cases won't share a common Cmq. If α̇ isn't already a direct sim output, differentiate α carefully — raw finite differences amplify noise badly.
+
+Then add height above ground as its own term. Ground effect (mainly reduced downwash reaching the tail) is likely one of the largest and most nonlinear contributions to Cm you have here, since h sweeps from tens of feet to zero over the maneuver — not a small perturbation. I wouldn't assume it's linear in h; try a few candidate transforms (h, exp(−h/b), etc.) or let a stepwise/structure-selection process show you what shape the data actually wants. Gear compression itself doesn't need its own term — its effect is already captured through its influence on height and attitude.
+
+**Use coefficient form, not raw dimensional moment.** Since M = q̄Sc̄·Cm and your mass cases trim at different speeds, regressing dimensional moment directly conflates the true aerodynamic shape with dynamic-pressure scaling — your fitted "constants" won't actually be constant across cases. Convert to Cm = M/(q̄Sc̄) using each case's own q̄(t), then regress. That's what lets you pool every mass/sink-rate case into one consistent fit.
+
+**Fit across the trajectory, not at a single point.** You mentioned the trim condition specifically — worth being clear that this is your reference/starting point, not necessarily the point to linearize about. α and h move substantially, not infinitesimally, through flare and touchdown, so a small-signal Jacobian linearization at that single initial trim would only be locally valid. What you want here is the build-up model above, fit as a regression across the whole range your cases cover — a separate exercise from a classical small-signal linearization, which is worth doing too if you ever need it (e.g., short-period stability analysis at that specific point), just not a substitute for this.
+
+**The fit itself** is ordinary least squares, with a few practical points:
+- Pool all cases (in coefficient form) into one regressor matrix, but check the correlation/condition number among regressors before trusting individual coefficients — especially between δ and (α, q) if included, and between q and α̇, which are notoriously hard to separate from typical maneuvers and often get reported as a lumped Cmq+Cmα̇ term in practice.
+- Use significance testing or stepwise regression to decide what stays, rather than keeping every term by default — with ground effect potentially dominating in this regime, some "classical" terms may not earn their keep.
+- Validate by holding out entire cases (fit on some mass/sink-rate combinations, predict the rest), not by randomly splitting individual time samples — samples within a run are heavily autocorrelated, so a random split will look better than the model actually generalizes.
+- Sanity-check signs against what you already know about the aircraft (Cmα and Cmq negative for a statically stable, well-damped configuration) — a quick, cheap check that you've found something physical rather than an artifact of your specific dataset.
+
+**One more option, possibly the cleanest:** since you own the simulation, if the aero Cm submodel can be exercised independently of the closed-loop FCS — sweeping α, δ, q, h on a grid with everything else held fixed — fitting your linear model to that open-loop sweep sidesteps the δ-correlation question entirely, and gives you a clean cross-check against whatever you get from the closed-loop trajectories.
+
+If you want a reference, Klein & Morelli's *Aircraft System Identification: Theory and Practice* is the standard text for this family of methods and goes deeper on structure determination and confidence intervals than I have room for here.
+
+Once I know whether δ is in your dataset, I can help set up the actual regression — Python or MATLAB, whichever you're working in.
