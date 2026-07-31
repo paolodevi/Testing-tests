@@ -1,1 +1,53 @@
-.
+function results = regression_tstats(X, y, varNames)
+%REGRESSION_TSTATS  OLS fit with per-variable t-stats and p-values.
+%
+%   results = REGRESSION_TSTATS(X, y) fits y = X*beta by ordinary least
+%   squares and returns a table with one row per column of X, giving the
+%   coefficient, its standard error, t-statistic, and p-value.
+%
+%   results = REGRESSION_TSTATS(X, y, varNames) labels rows using the
+%   cell array of strings varNames (e.g. {'Cm0','alpha','qhat','delta'}).
+%
+%   X         n-by-p matrix of regressors. Include a column of ones
+%             yourself if you want an intercept (e.g. Cm0).
+%   y         n-by-1 response vector (e.g. Cm).
+%
+%   Rows are sorted by ascending p-value, so the least significant
+%   candidate (the one to drop in backward stepwise, or the best
+%   candidate to add next in forward stepwise) is easy to spot.
+
+    [n, p] = size(X);
+    dof = n - p;
+    if dof <= 0
+        error('regression_tstats:dof', ...
+            'Not enough observations (%d) for %d regressors.', n, p);
+    end
+
+    if nargin < 3 || isempty(varNames)
+        varNames = arrayfun(@(j) sprintf('x%d', j), 1:p, 'UniformOutput', false);
+    end
+    varNames = varNames(:);
+
+    % Flag collinearity before the numbers below get over-trusted
+    condX = cond(X);
+    if condX > 30
+        warning('regression_tstats:collinearity', ...
+            ['Condition number of X is %.1f (>30 is a common rule-of-thumb ' ...
+             'flag). Check correlation among regressors before trusting ' ...
+             'individual coefficients.'], condX);
+    end
+
+    beta  = X \ y;                      % backslash: better conditioned than explicit inv
+    resid = y - X * beta;
+    sigma2 = (resid' * resid) / dof;
+
+    covBeta = sigma2 * inv(X' * X);     %#ok<MINV> — fine at typical regressor counts
+    SE      = sqrt(diag(covBeta));
+
+    tStat  = beta ./ SE;
+    pValue = 2 * (1 - tcdf(abs(tStat), dof));
+
+    results = table(varNames, beta, SE, tStat, pValue, ...
+        'VariableNames', {'Variable','Coefficient','StdError','tStat','pValue'});
+    results = sortrows(results, 'pValue');
+end
