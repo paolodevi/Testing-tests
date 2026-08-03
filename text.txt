@@ -1,53 +1,116 @@
-function results = regression_tstats(X, y, varNames)
-%REGRESSION_TSTATS  OLS fit with per-variable t-stats and p-values.
-%
-%   results = REGRESSION_TSTATS(X, y) fits y = X*beta by ordinary least
-%   squares and returns a table with one row per column of X, giving the
-%   coefficient, its standard error, t-statistic, and p-value.
-%
-%   results = REGRESSION_TSTATS(X, y, varNames) labels rows using the
-%   cell array of strings varNames (e.g. {'Cm0','alpha','qhat','delta'}).
-%
-%   X         n-by-p matrix of regressors. Include a column of ones
-%             yourself if you want an intercept (e.g. Cm0).
-%   y         n-by-1 response vector (e.g. Cm).
-%
-%   Rows are sorted by ascending p-value, so the least significant
-%   candidate (the one to drop in backward stepwise, or the best
-%   candidate to add next in forward stepwise) is easy to spot.
+%% ------------------------------------------------------------------------
+% Data
+% -------------------------------------------------------------------------
+Ts = mean(diff(t));      % Sampling time
+Fs = 1/Ts;
 
-    [n, p] = size(X);
-    dof = n - p;
-    if dof <= 0
-        error('regression_tstats:dof', ...
-            'Not enough observations (%d) for %d regressors.', n, p);
-    end
+alpha = detrend(alpha(:));
+flap  = detrend(flap(:));
+fore  = detrend(fore(:));
 
-    if nargin < 3 || isempty(varNames)
-        varNames = arrayfun(@(j) sprintf('x%d', j), 1:p, 'UniformOutput', false);
-    end
-    varNames = varNames(:);
+%% ------------------------------------------------------------------------
+% Plot signals
+% -------------------------------------------------------------------------
+figure
 
-    % Flag collinearity before the numbers below get over-trusted
-    condX = cond(X);
-    if condX > 30
-        warning('regression_tstats:collinearity', ...
-            ['Condition number of X is %.1f (>30 is a common rule-of-thumb ' ...
-             'flag). Check correlation among regressors before trusting ' ...
-             'individual coefficients.'], condX);
-    end
+subplot(3,1,1)
+plot(t,alpha,'LineWidth',1.5)
+grid on
+ylabel('\alpha')
 
-    beta  = X \ y;                      % backslash: better conditioned than explicit inv
-    resid = y - X * beta;
-    sigma2 = (resid' * resid) / dof;
+subplot(3,1,2)
+plot(t,flap,'LineWidth',1.5)
+grid on
+ylabel('\delta_{flap}')
 
-    covBeta = sigma2 * inv(X' * X);     %#ok<MINV> — fine at typical regressor counts
-    SE      = sqrt(diag(covBeta));
+subplot(3,1,3)
+plot(t,fore,'LineWidth',1.5)
+grid on
+ylabel('\delta_{fore}')
+xlabel('Time [s]')
 
-    tStat  = beta ./ SE;
-    pValue = 2 * (1 - tcdf(abs(tStat), dof));
+%% ------------------------------------------------------------------------
+% Cross correlation
+% -------------------------------------------------------------------------
+figure
 
-    results = table(varNames, beta, SE, tStat, pValue, ...
-        'VariableNames', {'Variable','Coefficient','StdError','tStat','pValue'});
-    results = sortrows(results, 'pValue');
-end
+subplot(2,1,1)
+
+[c,lags] = xcorr(flap,alpha,'coeff');
+
+plot(lags*Ts,c,'LineWidth',1.5)
+grid on
+xlabel('Lag [s]')
+ylabel('Correlation')
+title('Flap vs Alpha')
+
+[~,I] = max(c);
+
+fprintf('\n');
+fprintf('Maximum flap correlation = %.3f\n',c(I));
+fprintf('Lag = %.4f s\n',lags(I)*Ts);
+
+subplot(2,1,2)
+
+[c,lags] = xcorr(fore,alpha,'coeff');
+
+plot(lags*Ts,c,'LineWidth',1.5)
+grid on
+xlabel('Lag [s]')
+ylabel('Correlation')
+title('Foreplane vs Alpha')
+
+[~,I] = max(c);
+
+fprintf('Maximum foreplane correlation = %.3f\n',c(I));
+fprintf('Lag = %.4f s\n',lags(I)*Ts);
+
+%% ------------------------------------------------------------------------
+% Estimate transfer functions
+% -------------------------------------------------------------------------
+u = iddata([],alpha,Ts);
+
+y_flap = iddata(flap,alpha,Ts);
+y_fore = iddata(fore,alpha,Ts);
+
+% Second-order transfer functions
+np = 2;
+nz = 1;
+
+G_flap = tfest(y_flap,np,nz);
+G_fore = tfest(y_fore,np,nz);
+
+disp('Estimated flap transfer function')
+G_flap
+
+disp('Estimated foreplane transfer function')
+G_fore
+
+%% ------------------------------------------------------------------------
+% Compare prediction with measurements
+% -------------------------------------------------------------------------
+flap_est = lsim(G_flap,alpha,t);
+fore_est = lsim(G_fore,alpha,t);
+
+figure
+
+subplot(2,1,1)
+
+plot(t,flap,'b','LineWidth',1.5)
+hold on
+plot(t,flap_est,'r--','LineWidth',1.5)
+
+grid on
+legend('Measured','Estimated')
+ylabel('\delta_{flap}')
+
+subplot(2,1,2)
+
+plot(t,fore,'b','LineWidth',1.5)
+hold on
+plot(t,fore_est,'r--','LineWidth',1.5)
+
+grid on
+legend('Measured','Estimated')
+ylabel('\delta_{fore}')
+xlabel('Time [s]')
