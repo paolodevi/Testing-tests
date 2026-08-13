@@ -1,46 +1,36 @@
-%% NARX Network for Single-Input / Single-Output (SISO) Time Series Forecasting
+%% NARX Network for SISO Time Series -- Trained Across Multiple Experiments
 %
-% Generic rewrite of the MathWorks MagLev NARX example, using a generic
-% exogenous input u(t) and output y(t):
+% Extends narx_siso.m to fit ONE NARX model using data from several
+% separate experiments/runs (e.g. different test conditions), instead of
+% a single long time series.
 %
-%   y(t) = f( y(t-1), y(t-2), ..., y(t-nY), u(t-1), u(t-2), ..., u(t-nU) )
+% Two things change vs. the single-experiment version:
+%   1) Each experiment is windowed and kept as its OWN sequence -- never
+%      concatenated end-to-end, which would create a fake "transition"
+%      at the seam between two unrelated runs (the model would think the
+%      last points of run A are the history leading into run B).
+%   2) The train/val/test split happens at the EXPERIMENT level, not by
+%      slicing time within one experiment. If the goal is a model that
+%      generalizes across conditions, val/test need to be experiments
+%      the model has NEVER seen -- not just a later time-slice of a run
+%      it partially trained on.
+
+%% 1) Load data: one cell array entry per experiment
+% U, Y : Kx1 cell arrays, one cell per experiment. Each cell is a column
+% vector of that experiment's u (or y) samples. Experiments can have
+% different lengths -- that's fine, this doesn't require equal length.
 %
-% In words: the next output is predicted from a short window of its own
-% recent past (the autoregressive, "AR" part) plus a window of recent
-% input values (the "X" / exogenous part), passed through a nonlinear
-% function f() that the network learns.
-%
-% Requires: Deep Learning Toolbox, Simulink (R2025a or later, for trainnet)
+%   U = {u_exp1; u_exp2; ...; u_expK};
+%   Y = {y_exp1; y_exp2; ...; y_expK};
 
-%% 1) Load data
-% u : exogenous input,  column vector [numSamples x 1]
-% y : output to predict, column vector [numSamples x 1]
-% Replace this block with however you load your own data, e.g.:
-%   data = readmatrix("mydata.csv");
-%   u = data(:,1);
-%   y = data(:,2);
+load("myMultiExpData.mat", "U", "Y")   % <-- EDIT: point at your own data
+numExperiments = numel(U);
 
-load("myData.mat", "u", "y")   % <-- EDIT: point this at your own data
+%% 2) Network architecture -- identical to the single-experiment version
+nY = 2;
+nU = 2;
+numFilters = 15;
 
-figure
-tiledlayout(2,1)
-nexttile
-plot(u); xlabel("Time Step"); ylabel("u (input)")
-nexttile
-plot(y); xlabel("Time Step"); ylabel("y (output)")
-
-%% 2) Define the NARX network architecture
-nY = 2;           % how many past y-values feed back in (AR order)
-nU = 2;           % how many past u-values are used (exogenous order)
-numFilters = 15;  % width of the hidden layer: how many nonlinear
-                  % features are learned from each delay window
-
-% --- Branch 1: autoregressive (past y) ---
-% sequenceInputLayer takes a scalar time series. convolution1dLayer with
-% a kernel of length nY slides a window along the sequence: each output
-% time step is a *learned* weighted sum of the nY most recent y-values.
-% That's exactly the tapped-delay-line y(t-1)...y(t-nY) from the NARX
-% equation above, computed for every t in one pass.
 yBranch = [
     sequenceInputLayer(1, Name="yInput", MinLength=nY)
     convolution1dLayer(nY, numFilters, Name="convY")];
@@ -48,12 +38,6 @@ yBranch = [
 net = dlnetwork;
 net = addLayers(net, yBranch);
 
-% --- Branch 2: exogenous (past u), plus the layers that combine both ---
-% Same tapped-delay idea, now on u(t-1)...u(t-nU). concatenationLayer
-% merges the features from both branches, tanhLayer supplies the
-% nonlinearity, and fullyConnectedLayer(1) maps everything down to the
-% single predicted value of y(t). Together, cat -> tanh -> fc *is* the
-% learned function f() in the NARX equation.
 uBranch = [
     sequenceInputLayer(1, Name="uInput", MinLength=nU)
     convolution1dLayer(nU, numFilters, Name="convU")
@@ -62,77 +46,81 @@ uBranch = [
     fullyConnectedLayer(1)];
 
 net = addLayers(net, uBranch);
-net = connectLayers(net, "convY", "cat/in2");   % wire the y-branch into cat's 2nd input
+net = connectLayers(net, "convY", "cat/in2");
 
-% Initialize weights, then switch to double precision -- this small,
-% tightly-fit regression network trains more accurately in double.
 net = initialize(net);
 net = dlupdate(@double, net);
 
-%% 3) Split into train / test / validation (chronological -- never shuffle time series)
-trainSplit = 0.6;   % first 60% of samples -> training
-testSplit  = 0.2;   % next 20%  -> test (only evaluated after training is done)
-% the remaining ~20% -> validation (used *during* training to watch for overfitting)
+%% 3) Split by EXPERIMENT, not by time
+% Shuffle which experiments go where (fixed seed for reproducibility),
+% then hold entire experiments out for val/test -- this is what actually
+% tests whether the model generalizes to a case it hasn't seen, e.g. a
+% mass/sink-rate combination that wasn't in the training set.
+rng(0)
+expOrder = randperm(numExperiments);
 
-numSamples = numel(u);
-numTrain = floor(numSamples * trainSplit);
-numTest  = floor(numSamples * testSplit);
-numVal   = numSamples - numTrain - numTest;
+trainSplit = 0.6;
+testSplit  = 0.2;   % remainder -> validation
 
-numDelays = max(nU, nY);   % the larger delay sets how many samples of
-                            % "history" every split needs before its first prediction
+numTrainExp = round(numExperiments * trainSplit);
+numTestExp  = round(numExperiments * testSplit);
 
-% --- Training predictors/targets ---
-% yTrain/uTrain are the raw windows the conv layers slide over. Targets
-% (TTrain) start numDelays steps later, since the network needs that
-% much history before it can make its first prediction.
-yTrain = y(1+numDelays-nY : numTrain-1);
-uTrain = u(1+numDelays-nU : numTrain-1);
-TTrain = y(1+numDelays : numTrain);
+trainIdx = expOrder(1:numTrainExp);
+testIdx  = expOrder(numTrainExp+1 : numTrainExp+numTestExp);
+valIdx   = expOrder(numTrainExp+numTestExp+1 : end);
 
-% --- Normalize using TRAINING statistics only ---
-% Normalizing speeds up/stabilizes gradient-based training. Using only
-% the training set's mean/std (then reusing it on val/test) avoids
-% leaking information from val/test into the fit.
-muY = mean(yTrain);  sigmaY = std(yTrain);
-muU = mean(uTrain);  sigmaU = std(uTrain);
+numDelays = max(nU, nY);   % every experiment must have at least this many samples
 
-uTrain = (uTrain - muU) / sigmaU;
-yTrain = (yTrain - muY) / sigmaY;
-TTrain = (TTrain - muY) / sigmaY;
+%% 4) Window each experiment independently, keep them as separate cells
+% windowExperiment() (defined at the bottom of this file) applies the
+% same delay-offsetting logic as the single-experiment script, but to
+% one experiment at a time so no history leaks across boundaries.
+[yTrainCell, uTrainCell, TTrainCell] = deal(cell(numTrainExp,1));
+for k = 1:numTrainExp
+    e = trainIdx(k);
+    [yTrainCell{k}, uTrainCell{k}, TTrainCell{k}] = ...
+        windowExperiment(Y{e}, U{e}, nY, nU, numDelays);
+end
 
-% trainnet wants a single datastore combining both predictor branches + target
+% --- Normalize using stats pooled across ALL training experiments ---
+% One shared normalization for the whole model, fit only on training data.
+allYTrain = vertcat(yTrainCell{:});
+allUTrain = vertcat(uTrainCell{:});
+muY = mean(allYTrain);  sigmaY = std(allYTrain);
+muU = mean(allUTrain);  sigmaU = std(allUTrain);
+
+normalize = @(c, mu, sigma) cellfun(@(x) (x-mu)/sigma, c, UniformOutput=false);
+yTrainCell = normalize(yTrainCell, muY, sigmaY);
+uTrainCell = normalize(uTrainCell, muU, sigmaU);
+TTrainCell = normalize(TTrainCell, muY, sigmaY);
+
+% A cell array -- one cell per experiment -- is read by arrayDatastore
+% one cell (one full sequence) at a time by default, so each experiment
+% becomes its own training observation instead of being glued together.
 dsTrain = combine( ...
-    arrayDatastore(yTrain, IterationDimension=2), ...
-    arrayDatastore(uTrain, IterationDimension=2), ...
-    arrayDatastore(TTrain, IterationDimension=2));
+    arrayDatastore(yTrainCell), ...
+    arrayDatastore(uTrainCell), ...
+    arrayDatastore(TTrainCell));
 
-% --- Validation data (last block of the series) ---
-yVal = y(numTrain+numTest+1+numDelays-nY : end-1);
-uVal = u(numTrain+numTest+1+numDelays-nU : end-1);
-TVal = y(numTrain+numTest+1+numDelays : end);
-
-uVal = (uVal - muU) / sigmaU;
-yVal = (yVal - muY) / sigmaY;
-TVal = (TVal - muY) / sigmaY;
+% --- Validation experiments, same treatment ---
+numValExp = numel(valIdx);
+[yValCell, uValCell, TValCell] = deal(cell(numValExp,1));
+for k = 1:numValExp
+    e = valIdx(k);
+    [yValCell{k}, uValCell{k}, TValCell{k}] = ...
+        windowExperiment(Y{e}, U{e}, nY, nU, numDelays);
+end
+yValCell = normalize(yValCell, muY, sigmaY);
+uValCell = normalize(uValCell, muU, sigmaU);
+TValCell = normalize(TValCell, muY, sigmaY);
 
 dsVal = combine( ...
-    arrayDatastore(yVal, IterationDimension=2), ...
-    arrayDatastore(uVal, IterationDimension=2), ...
-    arrayDatastore(TVal, IterationDimension=2));
+    arrayDatastore(yValCell), ...
+    arrayDatastore(uValCell), ...
+    arrayDatastore(TValCell));
 
-% --- Test data (middle block; untouched until after training) ---
-yTest = y(numTrain+1+numDelays-nY : numTrain+numTest-1);
-uTest = u(numTrain+1+numDelays-nU : numTrain+numTest-1);
-TTest = y(numTrain+1+numDelays : numTrain+numTest);
-
-uTest = (uTest - muU) / sigmaU;
-yTest = (yTest - muY) / sigmaY;
-TTest = (TTest - muY) / sigmaY;
-
-%% 4) Train the network
-options = trainingOptions("lm", ...   % Levenberg-Marquardt: good fit for
-                                       % small nets/datasets in one batch
+%% 5) Train
+options = trainingOptions("lm", ...
     Plots="training-progress", ...
     Verbose=false, ...
     ValidationData=dsVal, ...
@@ -142,45 +130,47 @@ options = trainingOptions("lm", ...   % Levenberg-Marquardt: good fit for
 
 trainedNet = trainnet(dsTrain, net, "mse", options);
 
-%% 5) Test the network
-% Open-loop forecasting: at every step, feed in the ACTUAL past y and u
-% values (never the network's own predictions). Measures pure one-step-
-% ahead accuracy.
-YOpenLoop = predict(trainedNet, yTest, uTest);
+%% 6) Test: evaluate per held-out experiment, not pooled
+% Reporting one RMSE per test experiment (rather than a single pooled
+% number) shows whether performance is consistent across cases, or the
+% model quietly fails on a subset of conditions that a pooled average
+% would hide.
+numTestExpActual = numel(testIdx);
+rmseOpenPerExp = zeros(numTestExpActual,1);
 
-% Closed-loop forecasting: feed the network's own previous predictions
-% back in as if they were the real y history. This simulates the model
-% running on its own several steps into the future -- a harder, more
-% realistic test of how it would behave as a standalone forecaster.
-YClosedLoop = yTest(1:nY);   % seed with the first nY known values
+for k = 1:numTestExpActual
+    e = testIdx(k);
+    [yTest, uTest, TTest] = windowExperiment(Y{e}, U{e}, nY, nU, numDelays);
+    yTest = (yTest - muY) / sigmaY;
+    uTest = (uTest - muU) / sigmaU;
+    TTest = (TTest - muY) / sigmaY;
 
-for idx = 1:numTest-numDelays
-    YClosedLoop(end+1) = predict(trainedNet, ...
-        YClosedLoop(end-nY+1:end), ...
-        uTest(idx:idx+nU-1));
+    YOpenLoop = predict(trainedNet, yTest, uTest);
+    rmseOpenPerExp(k) = rmse(YOpenLoop, TTest);
 end
-YClosedLoop = YClosedLoop(numDelays+1:end);   % drop the seed values
 
-% --- Compare against targets ---
-yTrainTest = (y(1:numTrain+numTest) - muY) / sigmaY;
+resultsTable = table(testIdx', rmseOpenPerExp, ...
+    VariableNames=["ExperimentIndex","RMSE_OpenLoop"])
+fprintf("Mean open-loop RMSE across %d held-out experiments: %.4f\n", ...
+    numTestExpActual, mean(rmseOpenPerExp));
+fprintf("Worst-case open-loop RMSE: %.4f (experiment %d)\n", ...
+    max(rmseOpenPerExp), testIdx(rmseOpenPerExp==max(rmseOpenPerExp)));
 
-figure
-plot(yTrainTest); hold on
-plot((1:numel(YOpenLoop))+numTrain+numDelays, YOpenLoop, "--")
-plot((1:numel(YClosedLoop))+numTrain, YClosedLoop, "--")
-xlabel("Time Step"); ylabel("y (normalized)")
-title("NARX Network Predictions")
-legend("Target","Open-Loop Prediction","Closed-Loop Prediction", ...
-    Location="northwest")
+%% 7) (Optional) Choosing nY / nU / numFilters for the "ideal" model
+% To find settings that generalize -- not just fit the training data --
+% wrap steps 2-6 in a loop over candidate (nY, nU, numFilters) values and
+% compare mean AND worst-case held-out RMSE across experiments for each
+% candidate. Pick the smallest model whose worst-case error is still
+% acceptable, rather than the one with the lowest mean (a low mean can
+% hide one badly-fit case).
+%
+% With only a handful of experiments, consider k-fold cross-validation:
+% rotate which experiments are held out as "test" across folds and
+% average the result, instead of trusting a single random split.
 
-rmseOpen   = rmse(YOpenLoop, TTest)
-rmseClosed = rmse(YClosedLoop, TTest)
-
-save("trainedNARXNet.mat", "trainedNet")
-
-%% 6) (Optional) Export to Simulink
-% Converts the trained network into Simulink layer blocks you can drop
-% into a model. Wiring it up with Unit Delay blocks for u and y is a
-% manual step in Simulink itself -- see the MathWorks example for the
-% full walkthrough once you have a host model to place it in.
-% exportNetworkToSimulink(trainedNet, FrameBased=true);
+%% Helper: consistent per-experiment windowing (same offsets as narx_siso.m)
+function [yWin, uWin, TWin] = windowExperiment(y, u, nY, nU, numDelays)
+    yWin = y(1+numDelays-nY : end-1);
+    uWin = u(1+numDelays-nU : end-1);
+    TWin = y(1+numDelays : end);
+end
