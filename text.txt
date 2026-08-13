@@ -1,667 +1,115 @@
-%% NARX Network for SISO Time Series
-% Multiple independent experiments
-%
-% Each experiment is treated as ONE independent sequence.
-%
-% U = {u_exp1; u_exp2; ...; u_expK}
-% Y = {y_exp1; y_exp2; ...; y_expK}
-%
-% Each experiment can have a different number of samples.
-%
-% Important:
-%   - Sequences are stored as 1 x T (features x time)
-%   - Experiments are NEVER concatenated
-%   - Training/validation/test split is performed by experiment
-%   - MiniBatchSize = 1, so experiments with different lengths never
-%     have to be combined into the same mini-batch
-
-clear
-clc
-
-%% ========================================================================
-% 1) LOAD DATA
-% ========================================================================
-
-load("myMultiExpData.mat", "U", "Y");
-
-numExperiments = numel(U);
-
-if numel(Y) ~= numExperiments
-    error("U and Y must contain the same number of experiments.");
-end
-
-fprintf("Number of experiments: %d\n", numExperiments);
-
-
-%% ========================================================================
-% 2) CHECK AND FORMAT THE RAW DATA
-% ========================================================================
-
-% Make sure every experiment is numeric and convert it to a row vector.
-%
-% MATLAB sequence data for a SISO sequence should be:
-%
-%       1 x T
-%
-% where:
-%       1 = number of features
-%       T = number of time samples
-
-for k = 1:numExperiments
-
-    if ~isnumeric(U{k}) || ~isnumeric(Y{k})
-        error("Experiment %d contains non-numeric data.", k);
-    end
-
-    U{k} = double(U{k}(:)).';
-    Y{k} = double(Y{k}(:)).';
-
-    if isempty(U{k}) || isempty(Y{k})
-        error("Experiment %d is empty.", k);
-    end
-
-    if numel(U{k}) ~= numel(Y{k})
-        error("Experiment %d: U and Y have different lengths.", k);
-    end
-end
-
-
-%% ========================================================================
-% 3) NARX ARCHITECTURE PARAMETERS
-% ========================================================================
-
-% Number of samples used by the convolution to represent the output
-% history and input history.
-nY = 2;
-nU = 2;
-
-% Number of filters in each branch.
-numFilters = 15;
-
-% The initial history required by the model.
-numDelays = max(nY,nU);
-
-fprintf("\nNARX configuration:\n");
-fprintf("  nY          = %d\n", nY);
-fprintf("  nU          = %d\n", nU);
-fprintf("  numFilters = %d\n", numFilters);
-fprintf("  numDelays  = %d\n", numDelays);
-
-
-%% ========================================================================
-% 4) CREATE NETWORK
-% ========================================================================
-
-% -------------------------------------------------------------------------
-% Y branch
-% -------------------------------------------------------------------------
-%
-% Input:
-%       y history
-%
-% Output:
-%       learned representation of y history
-%
-% "causal" padding means that the convolution does not use future samples
-% relative to the current time step.
-
-yBranch = [
-    sequenceInputLayer(1, ...
-        Name="yInput", ...
-        MinLength=nY)
-
-    convolution1dLayer( ...
-        nY, ...
-        numFilters, ...
-        Padding="causal", ...
-        Name="convY")
-    ];
-
-
-% -------------------------------------------------------------------------
-% U branch
-% -------------------------------------------------------------------------
-
-uBranch = [
-    sequenceInputLayer(1, ...
-        Name="uInput", ...
-        MinLength=nU)
-
-    convolution1dLayer( ...
-        nU, ...
-        numFilters, ...
-        Padding="causal", ...
-        Name="convU")
-
-    concatenationLayer(1,2,Name="cat")
-
-    tanhLayer(Name="tanh")
-
-    fullyConnectedLayer(1,Name="output")
-    ];
-
-
-% -------------------------------------------------------------------------
-% Assemble network
-% -------------------------------------------------------------------------
-
-net = dlnetwork;
-
-net = addLayers(net,yBranch);
-net = addLayers(net,uBranch);
-
-net = connectLayers( ...
-    net, ...
-    "convY", ...
-    "cat/in2");
-
-
-% Initialize
-net = initialize(net);
-
-% Use double precision
-net = dlupdate(@double,net);
-
-
-%% ========================================================================
-% 5) SPLIT EXPERIMENTS
-% ========================================================================
-
-% IMPORTANT:
-%
-% We split by experiment rather than by individual samples.
-%
-% Therefore the model never sees any part of a validation/test experiment
-% during training.
-
-rng(0);
-
-expOrder = randperm(numExperiments);
-
-trainSplit = 0.60;
-testSplit  = 0.20;
-
-numTrainExp = max(1,round(numExperiments*trainSplit));
-numTestExp  = max(1,round(numExperiments*testSplit));
-
-% Make sure we don't ask for more experiments than available.
-if numTrainExp + numTestExp >= numExperiments
-    numTestExp = numExperiments - numTrainExp - 1;
-end
-
-if numTestExp < 1
-    error("Not enough experiments for train/validation/test split.");
-end
-
-trainIdx = expOrder(1:numTrainExp);
-
-testIdx = expOrder( ...
-    numTrainExp+1 : ...
-    numTrainExp+numTestExp);
-
-valIdx = expOrder( ...
-    numTrainExp+numTestExp+1 : ...
-    end);
-
-fprintf("\nExperiment split:\n");
-fprintf("  Training   : %d experiments\n",numel(trainIdx));
-fprintf("  Validation : %d experiments\n",numel(valIdx));
-fprintf("  Test       : %d experiments\n",numel(testIdx));
-
-
-%% ========================================================================
-% 6) PREPARE TRAINING EXPERIMENTS
-% ========================================================================
-
-[yTrainCell,uTrainCell,TTrainCell] = ...
-    deal(cell(numel(trainIdx),1));
-
-for k = 1:numel(trainIdx)
-
-    e = trainIdx(k);
-
-    [ ...
-        yTrainCell{k}, ...
-        uTrainCell{k}, ...
-        TTrainCell{k}] = ...
-        windowExperiment( ...
-            Y{e}, ...
-            U{e}, ...
-            nY, ...
-            nU, ...
-            numDelays);
-
-end
-
-
-%% ========================================================================
-% 7) NORMALIZATION
-% ========================================================================
-
-% IMPORTANT:
-%
-% Statistics are calculated ONLY from training experiments.
-%
-% Validation and test experiments must not influence the normalization.
-
-allYTrain = [yTrainCell{:}];
-allUTrain = [uTrainCell{:}];
-
-muY = mean(allYTrain);
-sigmaY = std(allYTrain);
-
-muU = mean(allUTrain);
-sigmaU = std(allUTrain);
-
-
-% Avoid division by zero in case a signal is constant.
-if sigmaY == 0
-    sigmaY = 1;
-end
-
-if sigmaU == 0
-    sigmaU = 1;
-end
-
-
-% Normalize each experiment independently using the COMMON training
-% statistics.
-
-for k = 1:numel(yTrainCell)
-
-    yTrainCell{k} = ...
-        (yTrainCell{k} - muY) / sigmaY;
-
-    uTrainCell{k} = ...
-        (uTrainCell{k} - muU) / sigmaU;
-
-    TTrainCell{k} = ...
-        (TTrainCell{k} - muY) / sigmaY;
-
-end
-
-
-%% ========================================================================
-% 8) CREATE TRAINING DATASTORE
-% ========================================================================
-
-% OutputType="same" is important here.
-%
-% Each element of yTrainCell is already a numeric array representing
-% ONE complete sequence.
-%
-% We do NOT want arrayDatastore to wrap that sequence in another cell.
-
-dsYTrain = arrayDatastore( ...
-    yTrainCell, ...
-    OutputType="same", ...
-    ReadSize=1);
-
-dsUTrain = arrayDatastore( ...
-    uTrainCell, ...
-    OutputType="same", ...
-    ReadSize=1);
-
-dsTTrain = arrayDatastore( ...
-    TTrainCell, ...
-    OutputType="same", ...
-    ReadSize=1);
-
-
-% Combine the two inputs and target.
-%
-% Resulting observation:
-%
-%   { y_sequence , u_sequence , target_sequence }
-
-dsTrain = combine( ...
-    dsYTrain, ...
-    dsUTrain, ...
-    dsTTrain);
-
-
-%% ========================================================================
-% 9) PREPARE VALIDATION EXPERIMENTS
-% ========================================================================
-
-numValExp = numel(valIdx);
-
-[yValCell,uValCell,TValCell] = ...
-    deal(cell(numValExp,1));
-
-for k = 1:numValExp
-
-    e = valIdx(k);
-
-    [ ...
-        yValCell{k}, ...
-        uValCell{k}, ...
-        TValCell{k}] = ...
-        windowExperiment( ...
-            Y{e}, ...
-            U{e}, ...
-            nY, ...
-            nU, ...
-            numDelays);
-
-    % Normalize using TRAINING statistics.
-    yValCell{k} = ...
-        (yValCell{k} - muY) / sigmaY;
-
-    uValCell{k} = ...
-        (uValCell{k} - muU) / sigmaU;
-
-    TValCell{k} = ...
-        (TValCell{k} - muY) / sigmaY;
-
-end
-
-
-%% ========================================================================
-% 10) CREATE VALIDATION DATASTORE
-% ========================================================================
-
-dsYVal = arrayDatastore( ...
-    yValCell, ...
-    OutputType="same", ...
-    ReadSize=1);
-
-dsUVal = arrayDatastore( ...
-    uValCell, ...
-    OutputType="same", ...
-    ReadSize=1);
-
-dsTVal = arrayDatastore( ...
-    TValCell, ...
-    OutputType="same", ...
-    ReadSize=1);
-
-
-dsVal = combine( ...
-    dsYVal, ...
-    dsUVal, ...
-    dsTVal);
-
-
-%% ========================================================================
-% 11) CHECK THE DATASTORE BEFORE TRAINING
-% ========================================================================
-
-% This is deliberately included.
-%
-% If there is a formatting problem, it is much better to discover it here
-% than inside trainnet.
-
-reset(dsTrain);
-
-firstBatch = read(dsTrain);
-
-fprintf("\nChecking first training observation:\n");
-
-disp("Y input:");
-disp(size(firstBatch{1}));
-
-disp("U input:");
-disp(size(firstBatch{2}));
-
-disp("Target:");
-disp(size(firstBatch{3}));
-
-
-% Expected:
-%
-%   Y input    = [1 x T]
-%   U input    = [1 x T]
-%   Target     = [1 x T]
-%
-% where T can be different for different experiments.
-
-
-%% ========================================================================
-% 12) TRAINING OPTIONS
-% ========================================================================
-
-options = trainingOptions("lm", ...
-
-    Plots="training-progress", ...
-
-    Verbose=true, ...
-
-    ValidationData=dsVal, ...
-
-    % VERY IMPORTANT:
-    %
-    % Each experiment can have a different number of samples.
-    % Therefore we process one experiment at a time.
-    MiniBatchSize=1, ...
-
-    MaxIterations=500, ...
-
-    GradientTolerance=1e-8, ...
-
-    StepTolerance=1e-8);
-
-
-%% ========================================================================
-% 13) TRAIN
-% ========================================================================
-
-fprintf("\nStarting training...\n");
-
-trainedNet = trainnet( ...
-    dsTrain, ...
-    net, ...
-    "mse", ...
-    options);
-
-
-%% ========================================================================
-% 14) TEST ON COMPLETELY UNSEEN EXPERIMENTS
-% ========================================================================
-
-numTestExpActual = numel(testIdx);
-
-rmseOpenPerExp = zeros(numTestExpActual,1);
-
-% Store predictions for optional later plotting.
-YTestCell = cell(numTestExpActual,1);
-TTestCell = cell(numTestExpActual,1);
-
-for k = 1:numTestExpActual
-
-    e = testIdx(k);
+function [yWin, uWin, TWin] = windowExperiment(y, u, nY, nU, numDelays)
 
     % ---------------------------------------------------------------
-    % Prepare experiment
+    % Convert everything to row vectors
     % ---------------------------------------------------------------
 
-    [ ...
-        yTest, ...
-        uTest, ...
-        TTest] = ...
-        windowExperiment( ...
-            Y{e}, ...
-            U{e}, ...
-            nY, ...
-            nU, ...
-            numDelays);
-
-
-    % ---------------------------------------------------------------
-    % Normalize using TRAINING statistics
-    % ---------------------------------------------------------------
-
-    yTest = ...
-        (yTest - muY) / sigmaY;
-
-    uTest = ...
-        (uTest - muU) / sigmaU;
-
-    TTestNormalized = ...
-        (TTest - muY) / sigmaY;
-
-
-    % ---------------------------------------------------------------
-    % Open-loop prediction
-    % ---------------------------------------------------------------
-
-    YOpenLoop = predict( ...
-        trainedNet, ...
-        yTest, ...
-        uTest);
-
-
-    % ---------------------------------------------------------------
-    % Calculate normalized RMSE
-    % ---------------------------------------------------------------
-
-    rmseOpenPerExp(k) = ...
-        sqrt(mean( ...
-            (YOpenLoop - TTestNormalized).^2));
-
-
-    % Store results
-    YTestCell{k} = YOpenLoop;
-    TTestCell{k} = TTestNormalized;
-
-end
-
-
-%% ========================================================================
-% 15) TEST RESULTS
-% ========================================================================
-
-resultsTable = table( ...
-    testIdx(:), ...
-    rmseOpenPerExp(:), ...
-    VariableNames={ ...
-        "ExperimentIndex", ...
-        "RMSE_OpenLoop"});
-
-
-disp(" ");
-disp("====================================================");
-disp("TEST RESULTS");
-disp("====================================================");
-
-disp(resultsTable);
-
-
-meanRMSE = mean(rmseOpenPerExp);
-
-[maxRMSE,worstLocalIndex] = ...
-    max(rmseOpenPerExp);
-
-worstExperiment = ...
-    testIdx(worstLocalIndex);
-
-fprintf("\nMean open-loop RMSE : %.6f\n",meanRMSE);
-
-fprintf("Worst-case RMSE     : %.6f\n",maxRMSE);
-
-fprintf("Worst experiment    : %d\n",worstExperiment);
-
-
-%% ========================================================================
-% 16) OPTIONAL: PLOT TEST EXPERIMENTS
-% ========================================================================
-
-for k = 1:numTestExpActual
-
-    figure;
-
-    plot(TTestCell{k}, ...
-        "LineWidth",1.2);
-
-    hold on;
-
-    plot(YTestCell{k}, ...
-        "--", ...
-        "LineWidth",1.2);
-
-    grid on;
-
-    xlabel("Time sample");
-    ylabel("Normalized output");
-
-    title(sprintf( ...
-        "Experiment %d - Open Loop Prediction", ...
-        testIdx(k)));
-
-    legend( ...
-        "Measured", ...
-        "NARX prediction", ...
-        Location="best");
-
-end
-
-
-%% ========================================================================
-% HELPER FUNCTION
-% ========================================================================
-
-function [yWin,uWin,TWin] = ...
-    windowExperiment(y,u,nY,nU,numDelays)
-
-    % Ensure row-vector sequence format:
-    %
-    %       1 x T
-    %
     y = double(y(:)).';
     u = double(u(:)).';
 
 
-    % Check that the experiment is long enough.
-    if numel(y) <= numDelays
+    % ---------------------------------------------------------------
+    % Basic checks
+    % ---------------------------------------------------------------
+
+    if numel(y) ~= numel(u)
+        error("U and Y must have the same number of samples.");
+    end
+
+    N = numel(y);
+
+    if numDelays ~= max(nY,nU)
+        numDelays = max(nY,nU);
+    end
+
+    if N <= numDelays
         error( ...
-            "Experiment is too short. " + ...
-            "It must contain more than %d samples.", ...
-            numDelays);
+            "Experiment is too short. It contains %d samples, " + ...
+            "but at least %d samples are required.", ...
+            N, numDelays + 1);
     end
 
 
     % ---------------------------------------------------------------
-    % Construct delayed sequences
+    % Define the common prediction interval
     % ---------------------------------------------------------------
     %
-    % Example:
+    % We want the model to predict:
     %
-    % nY = nU = 2
+    %       y(k)
     %
-    % Original:
+    % using information available before k.
     %
-    %       y1 y2 y3 y4 y5 ...
+    % The first prediction is therefore:
     %
-    % Input:
+    %       k = numDelays + 1
     %
-    %       y1 y2 y3 y4 ...
+    % The last prediction is:
     %
-    % Target:
+    %       k = N
     %
-    %         y3 y4 y5 ...
+    % Therefore every sequence has:
     %
+    %       N - numDelays
     %
-    % This keeps the input and target sequences aligned.
+    % samples.
+    %
 
-    yWin = ...
-        y(1 + numDelays - nY : end - 1);
+    targetIndex = (numDelays + 1):N;
 
-    uWin = ...
-        u(1 + numDelays - nU : end - 1);
+    TWin = y(targetIndex);
 
-    TWin = ...
-        y(1 + numDelays : end);
+
+    % ---------------------------------------------------------------
+    % Input sequences
+    % ---------------------------------------------------------------
+    %
+    % Both inputs MUST have the same number of time samples because
+    % they will be processed together by trainnet.
+    %
+    % We therefore provide the complete history available from the
+    % common starting point.
+    %
+    % The convolution layers themselves determine how many samples
+    % of that history are actually used.
+    %
+
+    inputIndex = numDelays:(N-1);
+
+    yWin = y(inputIndex);
+    uWin = u(inputIndex);
 
 
     % ---------------------------------------------------------------
     % Final consistency check
     % ---------------------------------------------------------------
 
-    if numel(yWin) ~= numel(uWin) || ...
-       numel(yWin) ~= numel(TWin)
-
+    if numel(yWin) ~= numel(uWin)
         error( ...
-            "Windowing produced sequences with different lengths.");
+            "Internal error: yWin and uWin have different lengths.");
     end
+
+    if numel(yWin) ~= numel(TWin)
+        error( ...
+            "Internal error: input and target sequences have " + ...
+            "different lengths. yWin=%d, uWin=%d, TWin=%d.", ...
+            numel(yWin), ...
+            numel(uWin), ...
+            numel(TWin));
+    end
+
+
+    % ---------------------------------------------------------------
+    % Final dimensions
+    % ---------------------------------------------------------------
+    %
+    % All three are:
+    %
+    %       1 x (N-numDelays)
+    %
+    % which is the MATLAB sequence format:
+    %
+    %       features x time
+    %
 
 end
