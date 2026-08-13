@@ -1,795 +1,186 @@
-Yes. In your case, NARX is actually a very natural method to try because you have multiple potential inputs and one output, and you suspect that the relationship is dynamic and nonlinear.
-
-The MathWorks example you linked is also the newer dlnetwork/trainnet implementation, rather than the older narxnet workflow. Since you are using MATLAB R2023b, there is an important compatibility point: the exact code from that page is based on functionality introduced in later releases. The older narxnet approach is available in your version and implements the same underlying NARX idea. 
-
-For your problem, I would structure the experiment as follows.
-
-
----
-
-1. What we are trying to identify
-
-Suppose your experimental data looks like
-
-\[
-u_1(t),u_2(t),\ldots,u_m(t)
-\]
-
-and you have one measured output
-
-\[
-y(t).
-\]
-
-A NARX model tries to learn something of the form
-
-\[
-\boxed{
-y(t)=f\left(
-y(t-1),\ldots,y(t-n_y),
-u_1(t-1),\ldots,u_1(t-n_u),
-\ldots,
-u_m(t-1),\ldots,u_m(t-n_u)
-\right)
-}
-\]
-
-where \(f(\cdot)\) is a nonlinear neural network.
-
-This is particularly interesting for your previous problem because you don't have to tell the model beforehand that the relationship is, for example,
-
-\[
-M = C_\alpha\alpha+C_q q+C_{\delta_f}\delta_f+\cdots
-\]
-
-Instead, the network attempts to discover the nonlinear mapping from the data.
-
-The important distinction is that NARX is not just a static regression. It explicitly incorporates the history of the inputs and output. MathWorks describes exactly this structure in the example you linked. 
-
-
----
-
-2. A MATLAB R2023b-compatible starting point
-
-I would start with the classical narxnet implementation rather than trying to reproduce the R2025a example line-by-line.
-
-Here is a complete starting script. I've deliberately made the parameters explicit so that we can later tune them systematically.
-
-%% ============================================================
-%  NARX SYSTEM IDENTIFICATION
-%  Multiple inputs -> one output
+%% NARX Network for Single-Input / Single-Output (SISO) Time Series Forecasting
 %
-%  MATLAB R2023b
-% =============================================================
-
-clear
-clc
-close all
-
-
-%% ============================================================
-% 1. LOAD YOUR DATA
-% =============================================================
-
-% Example:
+% Generic rewrite of the MathWorks MagLev NARX example, using a generic
+% exogenous input u(t) and output y(t):
 %
-% t  = time vector
-% u1 = input 1
-% u2 = input 2
-% u3 = input 3
-% y  = measured output
+%   y(t) = f( y(t-1), y(t-2), ..., y(t-nY), u(t-1), u(t-2), ..., u(t-nU) )
 %
-% Replace these with your actual variables.
-
-load('myData.mat')
-
-
-%% ============================================================
-% 2. DEFINE INPUTS AND OUTPUT
-% =============================================================
-
-% Each input must be a row vector.
+% In words: the next output is predicted from a short window of its own
+% recent past (the autoregressive, "AR" part) plus a window of recent
+% input values (the "X" / exogenous part), passed through a nonlinear
+% function f() that the network learns.
 %
-% Example:
-%
-% u1 = angle of attack
-% u2 = flap deflection
-% u3 = foreplane deflection
-%
-% y  = pitching moment
+% Requires: Deep Learning Toolbox, Simulink (R2025a or later, for trainnet)
 
-u1 = u1(:)';
-u2 = u2(:)';
-u3 = u3(:)';
+%% 1) Load data
+% u : exogenous input,  column vector [numSamples x 1]
+% y : output to predict, column vector [numSamples x 1]
+% Replace this block with however you load your own data, e.g.:
+%   data = readmatrix("mydata.csv");
+%   u = data(:,1);
+%   y = data(:,2);
 
-y = y(:)';
-
-% Put all external inputs into one cell array.
-X = {u1; u2; u3};
-
-% Target/output
-T = {y};
-
-
-%% ============================================================
-% 3. SPLIT DATA INTO TRAINING AND TESTING
-% ============================================================
-
-N = length(y);
-
-trainRatio = 0.70;
-testRatio  = 0.30;
-
-Ntrain = floor(trainRatio*N);
-
-XTrain = cell(size(X));
-
-for i = 1:length(X)
-    XTrain{i} = X{i}(1:Ntrain);
-end
-
-TTrain = {y(1:Ntrain)};
-
-XTest = cell(size(X));
-
-for i = 1:length(X)
-    XTest{i} = X{i}(Ntrain+1:end);
-end
-
-TTest = {y(Ntrain+1:end)};
-
-
-%% ============================================================
-% 4. DEFINE THE NARX MODEL
-% ============================================================
-
-% Number of delays
-inputDelays    = 1:5;
-feedbackDelays = 1:5;
-
-% Number of neurons in hidden layer
-hiddenNeurons = 10;
-
-% Create NARX network
-net = narxnet( ...
-    inputDelays, ...
-    feedbackDelays, ...
-    hiddenNeurons);
-
-
-%% ============================================================
-% 5. PREPARE THE TRAINING DATA
-% ============================================================
-
-[Xs,Xi,Ai,Ts] = preparets( ...
-    net, ...
-    XTrain, ...
-    {}, ...
-    TTrain);
-
-
-%% ============================================================
-% 6. TRAIN THE NETWORK
-% ============================================================
-
-% Training function
-net.trainFcn = 'trainlm';
-
-% Train
-[net,tr] = train( ...
-    net, ...
-    Xs, ...
-    Ts, ...
-    Xi, ...
-    Ai);
-
-
-%% ============================================================
-% 7. PREDICTION IN OPEN LOOP
-% ============================================================
-
-[Y,Xf,Af] = net( ...
-    Xs, ...
-    Xi, ...
-    Ai);
-
-
-%% ============================================================
-% 8. CALCULATE TRAINING ERROR
-% ============================================================
-
-Ytrain = cell2mat(Y);
-Ttrain = cell2mat(Ts);
-
-RMSE_train = sqrt(mean((Ytrain-Ttrain).^2));
-
-fprintf('\nTraining RMSE = %.6g\n',RMSE_train);
-
-
-%% ============================================================
-% 9. CONVERT NETWORK TO CLOSED LOOP
-% ============================================================
-
-[netClosed,Xic,Aic] = closeloop( ...
-    net, ...
-    Xf, ...
-    Af);
-
-
-%% ============================================================
-% 10. PREPARE TEST DATA
-% ============================================================
-
-[XTest_s,XTest_i,AiTest,TsTest] = preparets( ...
-    netClosed, ...
-    XTest, ...
-    {}, ...
-    TTest);
-
-
-%% ============================================================
-% 11. CLOSED-LOOP PREDICTION
-% ============================================================
-
-YTest = netClosed( ...
-    XTest_s, ...
-    XTest_i, ...
-    AiTest);
-
-
-%% ============================================================
-% 12. CALCULATE TEST ERROR
-% ============================================================
-
-Ytest = cell2mat(YTest);
-Ttest = cell2mat(TsTest);
-
-RMSE_test = sqrt(mean((Ytest-Ttest).^2));
-
-fprintf('Test RMSE     = %.6g\n',RMSE_test);
-
-
-%% ============================================================
-% 13. PLOT RESULT
-% ============================================================
+load("myData.mat", "u", "y")   % <-- EDIT: point this at your own data
 
 figure
+tiledlayout(2,1)
+nexttile
+plot(u); xlabel("Time Step"); ylabel("u (input)")
+nexttile
+plot(y); xlabel("Time Step"); ylabel("y (output)")
 
-plot(Ttest,'LineWidth',1.5)
-hold on
-plot(Ytest,'--','LineWidth',1.5)
+%% 2) Define the NARX network architecture
+nY = 2;           % how many past y-values feed back in (AR order)
+nU = 2;           % how many past u-values are used (exogenous order)
+numFilters = 15;  % width of the hidden layer: how many nonlinear
+                  % features are learned from each delay window
 
-grid on
+% --- Branch 1: autoregressive (past y) ---
+% sequenceInputLayer takes a scalar time series. convolution1dLayer with
+% a kernel of length nY slides a window along the sequence: each output
+% time step is a *learned* weighted sum of the nY most recent y-values.
+% That's exactly the tapped-delay-line y(t-1)...y(t-nY) from the NARX
+% equation above, computed for every t in one pass.
+yBranch = [
+    sequenceInputLayer(1, Name="yInput", MinLength=nY)
+    convolution1dLayer(nY, numFilters, Name="convY")];
 
-xlabel('Time step')
-ylabel('Output')
+net = dlnetwork;
+net = addLayers(net, yBranch);
 
-legend( ...
-    'Measured', ...
-    'NARX prediction')
+% --- Branch 2: exogenous (past u), plus the layers that combine both ---
+% Same tapped-delay idea, now on u(t-1)...u(t-nU). concatenationLayer
+% merges the features from both branches, tanhLayer supplies the
+% nonlinearity, and fullyConnectedLayer(1) maps everything down to the
+% single predicted value of y(t). Together, cat -> tanh -> fc *is* the
+% learned function f() in the NARX equation.
+uBranch = [
+    sequenceInputLayer(1, Name="uInput", MinLength=nU)
+    convolution1dLayer(nU, numFilters, Name="convU")
+    concatenationLayer(1, 2, Name="cat")
+    tanhLayer
+    fullyConnectedLayer(1)];
 
-title('NARX model prediction')
+net = addLayers(net, uBranch);
+net = connectLayers(net, "convY", "cat/in2");   % wire the y-branch into cat's 2nd input
 
+% Initialize weights, then switch to double precision -- this small,
+% tightly-fit regression network trains more accurately in double.
+net = initialize(net);
+net = dlupdate(@double, net);
 
-%% ============================================================
-% 14. PLOT TRAINING PERFORMANCE
-% ============================================================
+%% 3) Split into train / test / validation (chronological -- never shuffle time series)
+trainSplit = 0.6;   % first 60% of samples -> training
+testSplit  = 0.2;   % next 20%  -> test (only evaluated after training is done)
+% the remaining ~20% -> validation (used *during* training to watch for overfitting)
+
+numSamples = numel(u);
+numTrain = floor(numSamples * trainSplit);
+numTest  = floor(numSamples * testSplit);
+numVal   = numSamples - numTrain - numTest;
+
+numDelays = max(nU, nY);   % the larger delay sets how many samples of
+                            % "history" every split needs before its first prediction
+
+% --- Training predictors/targets ---
+% yTrain/uTrain are the raw windows the conv layers slide over. Targets
+% (TTrain) start numDelays steps later, since the network needs that
+% much history before it can make its first prediction.
+yTrain = y(1+numDelays-nY : numTrain-1);
+uTrain = u(1+numDelays-nU : numTrain-1);
+TTrain = y(1+numDelays : numTrain);
+
+% --- Normalize using TRAINING statistics only ---
+% Normalizing speeds up/stabilizes gradient-based training. Using only
+% the training set's mean/std (then reusing it on val/test) avoids
+% leaking information from val/test into the fit.
+muY = mean(yTrain);  sigmaY = std(yTrain);
+muU = mean(uTrain);  sigmaU = std(uTrain);
+
+uTrain = (uTrain - muU) / sigmaU;
+yTrain = (yTrain - muY) / sigmaY;
+TTrain = (TTrain - muY) / sigmaY;
+
+% trainnet wants a single datastore combining both predictor branches + target
+dsTrain = combine( ...
+    arrayDatastore(yTrain, IterationDimension=2), ...
+    arrayDatastore(uTrain, IterationDimension=2), ...
+    arrayDatastore(TTrain, IterationDimension=2));
+
+% --- Validation data (last block of the series) ---
+yVal = y(numTrain+numTest+1+numDelays-nY : end-1);
+uVal = u(numTrain+numTest+1+numDelays-nU : end-1);
+TVal = y(numTrain+numTest+1+numDelays : end);
+
+uVal = (uVal - muU) / sigmaU;
+yVal = (yVal - muY) / sigmaY;
+TVal = (TVal - muY) / sigmaY;
+
+dsVal = combine( ...
+    arrayDatastore(yVal, IterationDimension=2), ...
+    arrayDatastore(uVal, IterationDimension=2), ...
+    arrayDatastore(TVal, IterationDimension=2));
+
+% --- Test data (middle block; untouched until after training) ---
+yTest = y(numTrain+1+numDelays-nY : numTrain+numTest-1);
+uTest = u(numTrain+1+numDelays-nU : numTrain+numTest-1);
+TTest = y(numTrain+1+numDelays : numTrain+numTest);
+
+uTest = (uTest - muU) / sigmaU;
+yTest = (yTest - muY) / sigmaY;
+TTest = (TTest - muY) / sigmaY;
+
+%% 4) Train the network
+options = trainingOptions("lm", ...   % Levenberg-Marquardt: good fit for
+                                       % small nets/datasets in one batch
+    Plots="training-progress", ...
+    Verbose=false, ...
+    ValidationData=dsVal, ...
+    MaxIterations=500, ...
+    GradientTolerance=1e-8, ...
+    StepTolerance=1e-8);
+
+trainedNet = trainnet(dsTrain, net, "mse", options);
+
+%% 5) Test the network
+% Open-loop forecasting: at every step, feed in the ACTUAL past y and u
+% values (never the network's own predictions). Measures pure one-step-
+% ahead accuracy.
+YOpenLoop = predict(trainedNet, yTest, uTest);
+
+% Closed-loop forecasting: feed the network's own previous predictions
+% back in as if they were the real y history. This simulates the model
+% running on its own several steps into the future -- a harder, more
+% realistic test of how it would behave as a standalone forecaster.
+YClosedLoop = yTest(1:nY);   % seed with the first nY known values
+
+for idx = 1:numTest-numDelays
+    YClosedLoop(end+1) = predict(trainedNet, ...
+        YClosedLoop(end-nY+1:end), ...
+        uTest(idx:idx+nU-1));
+end
+YClosedLoop = YClosedLoop(numDelays+1:end);   % drop the seed values
+
+% --- Compare against targets ---
+yTrainTest = (y(1:numTrain+numTest) - muY) / sigmaY;
 
 figure
-
-plotperform(tr)
-
-grid on
-
-
-%% ============================================================
-% 15. DISPLAY NETWORK
-% ============================================================
-
-view(net)
-
-The important point is that preparets is doing more than just formatting the data. Because the network has delays, MATLAB has to remove the initial samples needed to populate those delay states. This is exactly why preparets exists. 
-
-
----
-
-3. Let's understand each important parameter
-
-The most important line is:
-
-net = narxnet(inputDelays,feedbackDelays,hiddenNeurons);
-
-There are three things you need to choose.
-
-inputDelays
-
-For example:
-
-inputDelays = 1:5;
-
-means that the network sees
-
-\[
-u(t-1),u(t-2),u(t-3),u(t-4),u(t-5).
-\]
-
-If you have three inputs:
-
-u1
-u2
-u3
-
-the network therefore receives
-
-\[
-u_1(t-1),...,u_1(t-5)
-\]
-
-\[
-u_2(t-1),...,u_2(t-5)
-\]
-
-\[
-u_3(t-1),...,u_3(t-5).
-\]
-
-This is one of the parameters I would definitely investigate systematically in your case.
-
-For example:
-
-inputDelays = 1:2;
-
-gives a very short memory.
-
-inputDelays = 1:10;
-
-gives a longer memory.
-
-inputDelays = 1:20;
-
-gives the network considerably more information about the past.
-
-
----
-
-4. feedbackDelays
-
-This is the autoregressive part.
-
-For example:
-
-feedbackDelays = 1:5;
-
-means that the network uses
-
-\[
-y(t-1),y(t-2),...,y(t-5).
-\]
-
-So your network becomes approximately
-
-\[
-y(t)=f[
-u_1(t-1:t-5),
-u_2(t-1:t-5),
-u_3(t-1:t-5),
-y(t-1:t-5)
-].
-\]
-
-This is why NARX is different from a normal feedforward regression.
-
-
----
-
-5. hiddenNeurons
-
-For example:
-
-hiddenNeurons = 10;
-
-means that the nonlinear mapping \(f\) is represented by a hidden layer containing 10 neurons.
-
-You can think of this as controlling the complexity of the model.
-
-Try something like:
-
-hiddenNeurons = 5;
-
-then
-
-hiddenNeurons = 10;
-
-then
-
-hiddenNeurons = 20;
-
-then
-
-hiddenNeurons = 50;
-
-and compare the test error.
-
-Be careful, though: increasing the number of neurons does not automatically make the model better. Eventually you can overfit the training data.
-
-
----
-
-6. Why do we train in open loop?
-
-This is probably the most important conceptual point in the MathWorks example.
-
-During training, we know the actual output:
-
-\[
-y(t).
-\]
-
-Therefore, instead of feeding the network's previous prediction back into itself, we give it the real measured previous output.
-
-For example:
-
-\[
-\boxed{
-\hat y(t)=
-f(
-y(t-1),
-y(t-2),
-u(t-1),
-u(t-2)
-)
-}
-\]
-
-where the \(y(t-1)\) and \(y(t-2)\) are measured values.
-
-This is called open-loop or series-parallel training. MathWorks recommends this approach for training NARX networks. 
-
-
----
-
-7. Then why do we need closed loop?
-
-When you actually want to predict the future, you don't know future \(y\).
-
-Suppose you want
-
-\[
-y(t+1).
-\]
-
-You can calculate it from the known past.
-
-But to calculate
-
-\[
-y(t+2),
-\]
-
-you need \(y(t+1)\).
-
-You don't know the real \(y(t+1)\), so you use
-
-\[
-\hat y(t+1).
-\]
-
-Therefore:
-
-\[
-\hat y(t+2)
-=
-f(
-\hat y(t+1),
-y(t),
-u(t+1),...
-).
-\]
-
-And then:
-
-\[
-\hat y(t+3)
-=
-f(
-\hat y(t+2),
-\hat y(t+1),...
-).
-\]
-
-This is the closed-loop configuration.
-
-That is why we do:
-
-[netClosed,Xic,Aic] = closeloop(net,Xf,Af);
-
-MathWorks explicitly describes the open-loop → closed-loop workflow for multistep prediction. 
-
-
----
-
-8. One thing I would change for your experiments
-
-There is a major issue with simply taking:
-
-70% → training
-30% → testing
-
-for your data.
-
-From our previous discussions, you have multiple experimental/landing cases.
-
-For example:
-
-Case 1
-Case 2
-Case 3
-Case 4
-...
-Case N
-
-I would not simply concatenate everything and randomly split individual samples.
-
-Instead, I would do something like:
-
-CASE 1 ────────────────┐
-CASE 2 ────────────────┤
-CASE 3 ────────────────┤── TRAINING
-CASE 4 ────────────────┘
-
-CASE 5 ────────────────┐
-CASE 6 ────────────────┘── TEST
-
-That gives you a much more meaningful test:
-
-> Can the NARX model identify the underlying dynamics from some experiments and reproduce a completely different experiment?
-
-
-
-This is much closer to what you ultimately want.
-
-
----
-
-9. Even more importantly: don't start with all your variables
-
-You previously found that variables such as AoA, flap deflection and foreplane deflection could reconstruct the pitching moment very accurately.
-
-I would use that as the first NARX experiment.
-
-For example:
-
-\[
-u(t)=
-\begin{bmatrix}
-\alpha(t)\\
-\delta_f(t)\\
-\delta_{fp}(t)
-\end{bmatrix}
-\]
-
-and
-
-\[
-y(t)=M(t).
-\]
-
-Then the NARX model becomes
-
-\[
-\boxed{
-M(t)=f[
-M(t-1:t-n),
-\alpha(t-1:t-m),
-\delta_f(t-1:t-m),
-\delta_{fp}(t-1:t-m)
-]
-}
-\]
-
-This would answer a very interesting question:
-
-> Does the pitching moment contain dynamic dependencies that cannot be represented by the instantaneous values of α, flap and foreplane?
-
-
-
-If NARX dramatically improves your prediction compared with your previous static regression, that is evidence that temporal dynamics/memory are important.
-
-If NARX does not improve it much, that is also valuable: it suggests that your moment is largely an instantaneous nonlinear function of those variables.
-
-
----
-
-10. I would actually run a model hierarchy
-
-Rather than immediately optimizing one enormous neural network, I recommend doing this:
-
-Model 1 — Static nonlinear regression
-
-\[
-M(t)=f[\alpha(t),\delta_f(t),\delta_{fp}(t)]
-\]
-
-Model 2 — Input-memory NARX
-
-\[
-M(t)=f[
-\alpha(t-1:t-n),
-\delta_f(t-1:t-n),
-\delta_{fp}(t-1:t-n)
-]
-\]
-
-Model 3 — Full NARX
-
-\[
-M(t)=f[
-M(t-1:t-n),
-\alpha(t-1:t-n),
-\delta_f(t-1:t-n),
-\delta_{fp}(t-1:t-n)
-]
-\]
-
-Then compare their prediction errors.
-
-This gives you considerably more physical insight than simply saying "the neural network gives an RMSE of X."
-
-
----
-
-11. There is another very important issue: your sampling frequency
-
-The delays are specified in samples, not seconds.
-
-Suppose your simulation has
-
-\[
-f_s=1000\ {\rm Hz}
-\]
-
-so
-
-\[
-\Delta t=0.001\ {\rm s}.
-\]
-
-Then:
-
-inputDelays = 1:5;
-
-means the model sees only
-
-\[
-1-5\ {\rm ms}
-\]
-
-of history.
-
-But if
-
-\[
-f_s=100\ {\rm Hz},
-\]
-
-the exact same:
-
-1:5
-
-means
-
-\[
-10-50\ {\rm ms}.
-\]
-
-Therefore, before selecting the delays, we should look at your actual sampling frequency and the characteristic time scales of the dynamics.
-
-For your aircraft problem this is particularly important because you may be trying to capture things such as short-period dynamics, actuator dynamics, aerodynamic lag, etc.
-
-
----
-
-12. One more issue: normalization
-
-The MathWorks example normalizes the training data using
-
-\[
-x_\mathrm{norm}
-=
-\frac{x-\mu}{\sigma}.
-\]
-
-This is important because your variables can have very different magnitudes.
-
-For example:
-
-alpha             ~ 0.05 rad
-flap              ~ 0.1 rad
-foreplane         ~ 0.05 rad
-pitching moment   ~ 10000 Nm
-
-Without normalization, the network's optimization can become poorly conditioned.
-
-Crucially, the mean and standard deviation must be calculated using the training data only and then applied to validation/test data. The MathWorks example follows exactly this principle. 
-
-
----
-
-13. One warning about the MathWorks page you linked
-
-The page you linked uses:
-
-dlnetwork
-
-and
-
-trainnet
-
-with a manually constructed architecture:
-
-sequenceInputLayer
-convolution1dLayer
-concatenationLayer
-tanhLayer
-fullyConnectedLayer
-
-This is a more modern implementation of the NARX idea. 
-
-However, the page says "Since R2025a", so I would not copy that implementation directly into your R2023b environment. 
-
-The older:
-
-narxnet(...)
-preparets(...)
-train(...)
-closeloop(...)
-
-workflow is much more appropriate for your current MATLAB version. Note that MathWorks now marks these older time-series functions for removal in future releases, so if you eventually move to a newer MATLAB version, we can migrate the model to a dlnetwork/trainnet implementation. 
-
-
----
-
-What I suggest we do next
-
-Rather than throwing your entire dataset into the script immediately, I would build this specifically around your experimental data.
-
-If you give me the names/dimensions of your MATLAB variables, for example:
-
-time
-alpha
-flap
-foreplane
-M
-caseID
-
-and tell me how the different experiments are currently stored (separate arrays, structs, tables, etc.), I can modify the script above into a proper NARX identification script that:
-
-1. handles all your experimental cases;
-
-
-2. normalizes them correctly;
-
-
-3. keeps entire experiments separate for validation/testing;
-
-
-4. automatically tries different inputDelays;
-
-
-5. automatically tries different feedbackDelays;
-
-
-6. tests different numbers of hidden neurons;
-
-
-7. compares RMSE, \(R^2\), and maximum error;
-
-
-8. plots measured vs predicted moment for every case; and
-
-
-9. tells us whether adding the NARX memory actually improves over your existing regression.
-
-
-
-That would be a much more meaningful experiment for your problem than simply following the MathWorks MagLev example.
+plot(yTrainTest); hold on
+plot((1:numel(YOpenLoop))+numTrain+numDelays, YOpenLoop, "--")
+plot((1:numel(YClosedLoop))+numTrain, YClosedLoop, "--")
+xlabel("Time Step"); ylabel("y (normalized)")
+title("NARX Network Predictions")
+legend("Target","Open-Loop Prediction","Closed-Loop Prediction", ...
+    Location="northwest")
+
+rmseOpen   = rmse(YOpenLoop, TTest)
+rmseClosed = rmse(YClosedLoop, TTest)
+
+save("trainedNARXNet.mat", "trainedNet")
+
+%% 6) (Optional) Export to Simulink
+% Converts the trained network into Simulink layer blocks you can drop
+% into a model. Wiring it up with Unit Delay blocks for u and y is a
+% manual step in Simulink itself -- see the MathWorks example for the
+% full walkthrough once you have a host model to place it in.
+% exportNetworkToSimulink(trainedNet, FrameBased=true);
