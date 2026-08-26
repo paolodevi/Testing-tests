@@ -1,115 +1,36 @@
-function [yWin, uWin, TWin] = windowExperiment(y, u, nY, nU, numDelays)
+A = model.A;
+B = model.B;
+nk = model.InputDelay;
 
-    % ---------------------------------------------------------------
-    % Convert everything to row vectors
-    % ---------------------------------------------------------------
+na = length(A) - 1;
+nu = length(B);
 
-    y = double(y(:)).';
-    u = double(u(:)).';
+N = length(u(:,1));
 
+y_pred = zeros(N,1);
 
-    % ---------------------------------------------------------------
-    % Basic checks
-    % ---------------------------------------------------------------
+for k = 1:N
 
-    if numel(y) ~= numel(u)
-        error("U and Y must have the same number of samples.");
+    % AR part
+    for j = 1:na
+        if k-j >= 1
+            y_pred(k) = y_pred(k) - A(j+1)*y_pred(k-j);
+        end
     end
 
-    N = numel(y);
+    % Input part
+    for i = 1:nu
 
-    if numDelays ~= max(nY,nU)
-        numDelays = max(nY,nU);
+        nb = length(B{i});
+
+        for j = 1:nb
+
+            idx = k - nk(i) - j + 1;
+
+            if idx >= 1
+                y_pred(k) = y_pred(k) + B{i}(j)*u(idx,i);
+            end
+
+        end
     end
-
-    if N <= numDelays
-        error( ...
-            "Experiment is too short. It contains %d samples, " + ...
-            "but at least %d samples are required.", ...
-            N, numDelays + 1);
-    end
-
-
-    % ---------------------------------------------------------------
-    % Define the common prediction interval
-    % ---------------------------------------------------------------
-    %
-    % We want the model to predict:
-    %
-    %       y(k)
-    %
-    % using information available before k.
-    %
-    % The first prediction is therefore:
-    %
-    %       k = numDelays + 1
-    %
-    % The last prediction is:
-    %
-    %       k = N
-    %
-    % Therefore every sequence has:
-    %
-    %       N - numDelays
-    %
-    % samples.
-    %
-
-    targetIndex = (numDelays + 1):N;
-
-    TWin = y(targetIndex);
-
-
-    % ---------------------------------------------------------------
-    % Input sequences
-    % ---------------------------------------------------------------
-    %
-    % Both inputs MUST have the same number of time samples because
-    % they will be processed together by trainnet.
-    %
-    % We therefore provide the complete history available from the
-    % common starting point.
-    %
-    % The convolution layers themselves determine how many samples
-    % of that history are actually used.
-    %
-
-    inputIndex = numDelays:(N-1);
-
-    yWin = y(inputIndex);
-    uWin = u(inputIndex);
-
-
-    % ---------------------------------------------------------------
-    % Final consistency check
-    % ---------------------------------------------------------------
-
-    if numel(yWin) ~= numel(uWin)
-        error( ...
-            "Internal error: yWin and uWin have different lengths.");
-    end
-
-    if numel(yWin) ~= numel(TWin)
-        error( ...
-            "Internal error: input and target sequences have " + ...
-            "different lengths. yWin=%d, uWin=%d, TWin=%d.", ...
-            numel(yWin), ...
-            numel(uWin), ...
-            numel(TWin));
-    end
-
-
-    % ---------------------------------------------------------------
-    % Final dimensions
-    % ---------------------------------------------------------------
-    %
-    % All three are:
-    %
-    %       1 x (N-numDelays)
-    %
-    % which is the MATLAB sequence format:
-    %
-    %       features x time
-    %
-
 end
