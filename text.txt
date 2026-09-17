@@ -1,36 +1,129 @@
-A = model.A;
-B = model.B;
-nk = model.InputDelay;
+%% FCS System Identification Pipeline
+%
+% Goal: identify a low-order, real-time-deployable model of the FCS
+%   Inputs:  nz, nx, q, theta, alpha   (5 states/signals)
+%   Outputs: flap, fore                (2 control surface deflections)
+%
+% This is a template - edit the marked sections to match your actual
+% data format and MATLAB toolbox version before running.
+%
+% Requires: System Identification Toolbox
 
-na = length(A) - 1;
-nu = length(B);
+clear; clc; close all;
 
-N = length(u(:,1));
+%% ---------------- 1. USER SETTINGS ----------------
+Ts          = 0.02;                        % [s] MUST match the loop rate
+                                            % of the real-time code that will
+                                            % run this model
+inputNames  = {'nz','nx','q','theta','alpha'};
+outputNames = {'flap','fore'};
+modelOrders = 1:8;                         % state-space orders to sweep
 
-y_pred = zeros(N,1);
+%% ---------------- 2. LOAD YOUR DATA ----------------
+% Replace this section with your own loading code. You need a cell array
+% `expData`, one struct per simulation run, each containing equally
+% sampled vectors for the 5 inputs and 2 outputs, e.g.:
+%
+%   expData{k}.nz, expData{k}.nx, expData{k}.q,
+%   expData{k}.theta, expData{k}.alpha, expData{k}.flap, expData{k}.fore
+%
+% expData = load(...);   % <-- populate this
 
-for k = 1:N
+nExp = numel(expData); %#ok<USENS>
 
-    % AR part
-    for j = 1:na
-        if k-j >= 1
-            y_pred(k) = y_pred(k) - A(j+1)*y_pred(k-j);
-        end
-    end
+%% ---------------- 3. BUILD IDDATA OBJECTS (detrended around trim) ----------------
+dataSets = cell(nExp,1);
+trimVals = cell(nExp,1);   % keep trim offsets so you can re-add them later
 
-    % Input part
-    for i = 1:nu
+for k = 1:nExp
+    e = expData{k};
 
-        nb = length(B{i});
+    U = [e.nz(:), e.nx(:), e.q(:), e.theta(:), e.alpha(:)];
+    Y = [e.flap(:), e.fore(:)];
 
-        for j = 1:nb
+    % Trim = value at start of the run. If your runs don't start at trim,
+    % replace with e.g. mean(U(1:N0,:)) over a steady pre-maneuver window.
+    uTrim = U(1,:);
+    yTrim = Y(1,:);
+    trimVals{k} = struct('u', uTrim, 'y', yTrim);
 
-            idx = k - nk(i) - j + 1;
-
-            if idx >= 1
-                y_pred(k) = y_pred(k) + B{i}(j)*u(idx,i);
-            end
-
-        end
-    end
+    ds = iddata(Y - yTrim, U - uTrim, Ts, ...
+        'InputName', inputNames, 'OutputName', outputNames, ...
+        'ExperimentName', sprintf('exp%02d', k));
+    dataSets{k} = ds;
 end
+
+data = merge(dataSets{:});   % single multi-experiment iddata object
+
+%% ---------------- 4. CHECK INPUT COLLINEARITY ----------------
+% nz, nx, q, theta, alpha are physically coupled through the equations of
+% motion - high correlation here flags poor identifiability for those
+% channels, independent of how good the model fit looks later.
+for k = 1:nExp
+    R = corr(dataSets{k}.u);
+    fprintf('--- Experiment %d input correlation ---\n', k);
+    disp(array2table(R, 'VariableNames', inputNames, 'RowNames', inputNames));
+end
+
+%% ---------------- 5. STATE-SPACE MODEL ORDER SWEEP ----------------
+opt = ssestOptions('EnforceStability', true, 'Display', 'off');
+nu  = numel(inputNames);
+
+% 'Feedthrough', false(1,nu): no direct D-term from inputs to outputs.
+% This avoids an algebraic loop once the model is closed back into the
+% rest of the simulation, and matches physical reality (actuators/filters
+% always add some delay). If your MATLAB version doesn't accept
+% 'Feedthrough' as a direct ssest argument, fix D=0 instead via an idss
+% init model with Structure.d.Free = false, Structure.d.Value = 0, and
+% pass that init model to ssest in place of the order.
+
+models = cell(numel(modelOrders),1);
+fitPct = cell(numel(modelOrders),1);
+
+for i = 1:numel(modelOrders)
+    n = modelOrders(i);
+    m = ssest(data, n, 'Feedthrough', false(1,nu), opt);
+    models{i} = m;
+    [~, fit] = compare(data, m);
+    fitPct{i} = fit;   % shape depends on number of experiments - inspect once
+    fprintf('Order %d: fit = %s\n', n, mat2str(round(fit,1)));
+end
+
+%% ---------------- 6. PICK A MODEL ----------------
+% Plot fit vs. order and look for the knee - lowest order that captures
+% most of the achievable fit, not the single highest-fit order (that's
+% usually just fitting noise / overfitting the correlated inputs).
+figure;
+hold on;
+for i = 1:numel(modelOrders)
+    plot(modelOrders(i)*ones(size(fitPct{i})), fitPct{i}, 'o');
+end
+xlabel('Model order'); ylabel('Fit [%]');
+title('Fit vs. state-space order'); grid on;
+
+chosenOrder = 4;                          % <-- set from the plot above
+sysID = models{modelOrders == chosenOrder};
+
+figure; compare(data, sysID);
+figure; resid(data, sysID);
+
+%% ---------------- 7. CONVERT FOR DEPLOYMENT ----------------
+sysSS   = ss(sysID);              % strip idss metadata -> plain ss
+sysSS_d = sysSS;
+if sysSS.Ts == 0
+    sysSS_d = c2d(sysSS, Ts, 'zoh');
+end
+
+% sysSS_d.A, .B, .C, .D are the four matrices to hand-port into your
+% real-time code, or drop directly into a Discrete State-Space block in
+% Simulink. Remember: this model works on DEVIATIONS from trim - add
+% trimVals{k}.u / trimVals{k}.y back at the input/output boundaries when
+% wiring it into the full simulation.
+
+save('fcs_reduced_model.mat', 'sysSS_d', 'trimVals', 'inputNames', 'outputNames', 'Ts');
+
+%% ---------------- 8. (STUB) CLOSED-LOOP VALIDATION ----------------
+% Before trusting this in production: substitute sysSS_d for the real FCS
+% block inside the full simulation and run it end-to-end. Open-loop fit
+% above does NOT guarantee closed-loop stability or behavior - that check
+% has to happen here, in your actual sim, not in this script.
