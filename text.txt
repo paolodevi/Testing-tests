@@ -1,117 +1,396 @@
 #!/usr/bin/env python3
+"""
+Fortran call-tree generator (a small "doxygen for Fortran").
+
+Usage examples
+--------------
+    python fortran_call_tree.py /path/to/src
+    python fortran_call_tree.py /path/a /path/b /path/c --root pals --output tree.html
+    python fortran_call_tree.py /path/src --ext .inc --ignore "mpi_*" --ignore dgemm
+    python fortran_call_tree.py /path/src --expand-once --max-depth 12
+
+Every folder is scanned recursively (symlinks followed). Extensions are
+matched case-insensitively (.f .F .for .FOR .f90 .F90 ...).
+
+In the HTML:
+    p: program   s: subroutine   f: function   ?: not found in the sources
+Click a routine name to see its inputs/outputs, description, file, callers
+and callees.
+"""
 
 import argparse
+import difflib
+import fnmatch
 import html
+import json
+import os
 import re
+import sys
 from pathlib import Path
+
+sys.setrecursionlimit(20000)
+
+DEFAULT_EXTENSIONS = [".f", ".for", ".f77", ".ftn",
+                      ".f90", ".f95", ".f03", ".f08", ".fpp"]
+FIXED_FORM_EXTENSIONS = {".f", ".for", ".f77", ".ftn"}   # lowercase
+DEFAULT_EXCLUDED_DIRS = {".git", ".svn", ".hg", "__pycache__"}
+
+KIND_LETTER = {"program": "p", "subroutine": "s", "function": "f", "missing": "?"}
+
+
+# ------------------------------------------------------------
+# Regular expressions
+# ------------------------------------------------------------
+
+_TYPE = (
+    r"(?:integer|real|double\s*precision|double\s*complex|complex|logical|"
+    r"character|byte|type\s*\([^)]*\)|class\s*\([^)]*\))"
+    r"(?:\s*\*\s*\d+|\s*\*\s*\(\s*[^)]*\)|\s*\([^)]*\))?"
+)
+
+# program x / subroutine x(...) / [real(8)|recursive|pure...] function x(...) [result(r)]
+_ROUTINE_RE = re.compile(
+    r"^\s*(?P<prefix>(?:(?:recursive|pure|elemental|impure|module|" + _TYPE + r")\s+)*)"
+    r"(?P<kind>program|subroutine|function)\s+(?P<name>[a-z_]\w*)\s*"
+    r"(?:\((?P<args>[^)]*)\))?(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_RESULT_RE = re.compile(r"\bresult\s*\(\s*([a-z_]\w*)\s*\)", re.IGNORECASE)
+_END_ROUTINE_RE = re.compile(
+    r"^\s*end\s*(?:(?:program|subroutine|function)\b.*)?$", re.IGNORECASE)
+
+_MODULE_RE = re.compile(
+    r"^\s*module\s+(?!procedure\b|subroutine\b|function\b|pure\b|elemental\b|"
+    r"recursive\b)([a-z_]\w*)\s*$", re.IGNORECASE)
+_END_MODULE_RE = re.compile(r"^\s*end\s*module\b", re.IGNORECASE)
+
+_INTERFACE_RE = re.compile(r"^\s*(?:abstract\s+)?interface\b", re.IGNORECASE)
+_END_INTERFACE_RE = re.compile(r"^\s*end\s*interface\b", re.IGNORECASE)
+
+_TYPE_DEF_RE = re.compile(r"^\s*type\b(?!\s*\()(?!\s+is\b)", re.IGNORECASE)
+_END_TYPE_RE = re.compile(r"^\s*end\s*type\b", re.IGNORECASE)
+
+# call foo(...)  /  call obj%method(...)
+_CALL_RE = re.compile(r"\bcall\s+([a-z_]\w*(?:\s*%\s*[a-z_]\w*)*)", re.IGNORECASE)
+# something( ... used to detect references to known functions
+_FUNC_REF_RE = re.compile(r"\b([a-z_]\w*)\s*\(", re.IGNORECASE)
+
+# declarations:  real(8), intent(in) :: a, b(3)      and      real a, b(3)
+_DECL_COLON_RE = re.compile(
+    r"^\s*(?P<type>" + _TYPE + r")(?P<attrs>(?:\s*,.*?)?)\s*::\s*(?P<ents>.+)$",
+    re.IGNORECASE)
+_DECL_OLD_RE = re.compile(
+    r"^\s*(?P<type>" + _TYPE + r")\s+(?P<ents>[a-z_].*)$", re.IGNORECASE)
+
+_INTENT_ATTR_RE = re.compile(r"intent\s*\(\s*(in\s*out|inout|in|out)\s*\)", re.IGNORECASE)
+_DIM_ATTR_RE = re.compile(r"dimension\s*(\((?:[^()]|\([^()]*\))*\))", re.IGNORECASE)
+_OPTIONAL_ATTR_RE = re.compile(r"\boptional\b", re.IGNORECASE)
+
+_INTENT_STMT_RE = re.compile(
+    r"^\s*intent\s*\(\s*(?P<i>in\s*out|inout|in|out)\s*\)\s*(?:::)?\s*(?P<ents>.+)$",
+    re.IGNORECASE)
+_DIM_STMT_RE = re.compile(r"^\s*dimension\s*(?:::)?\s*(?P<ents>.+)$", re.IGNORECASE)
+_OPTIONAL_STMT_RE = re.compile(r"^\s*optional\s*(?:::)?\s*(?P<ents>.+)$", re.IGNORECASE)
+
+_ENTITY_RE = re.compile(r"\s*([a-z_]\w*)\s*(\((?:[^()]|\([^()]*\))*\))?", re.IGNORECASE)
+
+_NONEXEC_RE = re.compile(
+    r"^\s*(?:use|implicit|external|intrinsic|common|dimension|data|parameter|save|"
+    r"include|format|entry|equivalence|namelist|contains|optional|intent|public|"
+    r"private|allocatable|pointer|target)\b", re.IGNORECASE)
+
+
+# ------------------------------------------------------------
+# Reading source: comments, continuation lines, fixed/free form
+# ------------------------------------------------------------
+
+def strip_inline(line):
+    """Remove a trailing ! comment and blank out string contents."""
+    out = []
+    quote = None
+    for ch in line:
+        if quote:
+            if ch == quote:
+                quote = None
+                out.append(ch)
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+            continue
+        if ch == "!":
+            break
+        out.append(ch)
+    return "".join(out)
+
+
+def read_statements(path):
+    """
+    Return (raw_lines, is_fixed_form, statements).
+
+    statements = [(first_line_idx, last_line_idx, lowercase_text), ...]
+    with comments removed, continuation lines joined and ';' split.
+    """
+    text = path.read_text(errors="ignore")
+    raw = text.splitlines()
+
+    # .f files are fixed form, unless they clearly use F90 syntax ('::')
+    fixed = path.suffix.lower() in FIXED_FORM_EXTENSIONS and "::" not in text
+
+    logical = []          # [start, end, code]
+    cur = None
+    pending = False       # free form: previous line ended with '&'
+
+    for i, line in enumerate(raw):
+        if line.lstrip().startswith("#"):          # preprocessor
+            continue
+
+        if fixed:
+            if line[:1] in ("c", "C", "*", "!") or not line.strip():
+                continue
+            is_cont = len(line) > 5 and line[5] not in " 0" and not line[:5].strip()
+            code = strip_inline(line[6:] if is_cont else line)
+            if not code.strip():
+                continue
+            if is_cont and cur is not None:
+                cur[1] = i
+                cur[2] += " " + code.strip()
+            else:
+                if cur is not None:
+                    logical.append(cur)
+                cur = [i, i, code]
+        else:
+            code = strip_inline(line)
+            if not code.strip():
+                continue
+            next_pending = code.rstrip().endswith("&")
+            if next_pending:
+                code = code.rstrip()[:-1]
+            if pending and cur is not None:
+                piece = code.lstrip()
+                if piece.startswith("&"):
+                    piece = piece[1:]
+                cur[1] = i
+                cur[2] += " " + piece.strip()
+            else:
+                if cur is not None:
+                    logical.append(cur)
+                cur = [i, i, code]
+            pending = next_pending
+
+    if cur is not None:
+        logical.append(cur)
+
+    statements = []
+    for start, end, code in logical:
+        for part in code.split(";"):
+            part = re.sub(r"^\s*\d+\s+", "", part.strip())   # drop numeric label
+            if part:
+                statements.append((start, end, part.lower()))
+
+    return raw, fixed, statements
+
+
+def comment_text(line, fixed):
+    """Return the text of a comment line, or None if it is not a comment."""
+    s = line.strip()
+    if fixed and line[:1] in ("c", "C", "*"):
+        return line[1:].strip()
+    if s.startswith("!"):
+        return s.lstrip("!").lstrip("<> ").strip()
+    return None
+
+
+def extract_doc(raw, start, end, fixed, limit=30):
+    """Comment block just above the routine header, else just below it."""
+    def collect(indices):
+        lines = []
+        for i in indices:
+            t = comment_text(raw[i], fixed)
+            if t is None:
+                break
+            lines.append(t)
+        return lines
+
+    above = collect(range(start - 1, -1, -1))[::-1]
+    lines = above or collect(range(end + 1, len(raw)))
+    lines = [l for l in lines if re.search(r"\w", l)]    # drop ----- separators
+    return "\n".join(lines[:limit])
 
 
 # ------------------------------------------------------------
 # Fortran parser
 # ------------------------------------------------------------
 
-ROUTINE_RE = re.compile(
-    r"^\s*(?:"
-    r"program\s+(\w+)|"
-    r"subroutine\s+(\w+)|"
-    r"(?:recursive\s+|pure\s+|elemental\s+)?function\s+(\w+)"
-    r")",
-    re.IGNORECASE,
-)
+def split_top(text, sep=","):
+    parts, depth, cur = [], 0, []
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == sep and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur))
+    return [p.strip() for p in parts if p.strip()]
 
-CALL_RE = re.compile(
-    r"\bcall\s+([a-zA-Z_]\w*)",
-    re.IGNORECASE,
-)
+
+def norm_intent(text):
+    t = re.sub(r"\s+", "", text.lower())
+    return "inout" if t in ("inout",) else t
 
 
-def strip_comments(line):
-    """
-    Remove comments from a Fortran line.
+def record_decl(routine, type_str, attrs, ents):
+    intent, optional, dims = None, False, ""
+    if attrs:
+        m = _INTENT_ATTR_RE.search(attrs)
+        if m:
+            intent = norm_intent(m.group(1))
+        m = _DIM_ATTR_RE.search(attrs)
+        if m:
+            dims = m.group(1)
+        optional = bool(_OPTIONAL_ATTR_RE.search(attrs))
+    type_str = re.sub(r"\s+", " ", type_str.strip()) if type_str else ""
 
-    Handles:
-      ! comments
-      fixed-form comments beginning with C/c/* in column 1
-    """
+    for ent in split_top(ents):
+        m = _ENTITY_RE.match(ent)
+        if not m:
+            continue
+        d = routine["decls"].setdefault(m.group(1).lower(), {})
+        if type_str:
+            d["type"] = type_str
+        if intent:
+            d["intent"] = intent
+        if optional:
+            d["optional"] = True
+        if m.group(2) or dims:
+            d["dims"] = m.group(2) or dims
 
-    if not line.strip():
-        return ""
 
-    # Fixed-form comment
-    if line[0] in ("c", "C", "*"):
-        return ""
-
-    # Remove ! outside quoted strings
-    result = []
-    quote = None
-
-    for char in line:
-        if char in ("'", '"'):
-            if quote is None:
-                quote = char
-            elif quote == char:
-                quote = None
-
-        if char == "!" and quote is None:
-            break
-
-        result.append(char)
-
-    return "".join(result)
+def record_attr_statement(routine, ents, intent=None, optional=False, dims=False):
+    for ent in split_top(ents):
+        m = _ENTITY_RE.match(ent)
+        if not m:
+            continue
+        d = routine["decls"].setdefault(m.group(1).lower(), {})
+        if intent:
+            d["intent"] = intent
+        if optional:
+            d["optional"] = True
+        if dims and m.group(2):
+            d["dims"] = m.group(2)
 
 
 def parse_fortran_file(path):
-    """
-    Return:
-        routines = {
-            routine_name: {
-                "name": ...,
-                "file": ...,
-                "calls": [...]
-            }
-        }
-    """
-
-    routines = {}
-
+    """Return a list of routine dicts found in one file."""
     try:
-        text = path.read_text(errors="ignore")
+        raw, fixed, statements = read_statements(path)
     except Exception as e:
         print(f"Warning: cannot read {path}: {e}")
-        return routines
+        return []
 
+    routines = []
     current = None
+    module = ""
+    iface_depth = 0
+    in_type = False
 
-    for raw_line in text.splitlines():
-        line = strip_comments(raw_line)
+    for start, end, stmt in statements:
 
-        if not line.strip():
+        # Skip interface blocks (they only declare, they don't define)
+        if _INTERFACE_RE.match(stmt):
+            iface_depth += 1
+            continue
+        if _END_INTERFACE_RE.match(stmt):
+            iface_depth = max(0, iface_depth - 1)
+            continue
+        if iface_depth:
             continue
 
-        # Find routine definition
-        match = ROUTINE_RE.match(line)
+        # Skip derived-type definitions
+        if _TYPE_DEF_RE.match(stmt):
+            in_type = True
+            continue
+        if _END_TYPE_RE.match(stmt):
+            in_type = False
+            continue
+        if in_type:
+            continue
 
-        if match:
-            name = next(group for group in match.groups() if group)
+        m = _MODULE_RE.match(stmt)
+        if m:
+            module = m.group(1)
+            continue
+        if _END_MODULE_RE.match(stmt):
+            module = ""
+            current = None
+            continue
 
-            name = name.lower()
-
+        # Routine header
+        m = _ROUTINE_RE.match(stmt)
+        if m:
+            kind = m.group("kind").lower()
+            name = m.group("name").lower()
+            args = [a.strip() for a in (m.group("args") or "").split(",")
+                    if a.strip() and a.strip() != "*"]
+            prefix_type = re.sub(
+                r"\b(recursive|pure|elemental|impure|module)\b", "",
+                m.group("prefix"), flags=re.IGNORECASE)
+            prefix_type = re.sub(r"\s+", " ", prefix_type).strip()
+            rm = _RESULT_RE.search(m.group("rest") or "")
             current = {
                 "name": name,
+                "kind": kind,
                 "file": str(path),
+                "line": start + 1,
+                "module": module,
+                "args": args,
+                "result": (rm.group(1).lower() if rm else name) if kind == "function" else "",
+                "prefix_type": prefix_type,
+                "decls": {},
+                "body": [],
                 "calls": [],
+                "doc": extract_doc(raw, start, end, fixed),
             }
-
-            routines[name] = current
+            routines.append(current)
             continue
 
-        # Find CALL statements inside current routine
-        if current:
-            for call in CALL_RE.findall(line):
-                call = call.lower()
+        if _END_ROUTINE_RE.match(stmt):
+            current = None
+            continue
 
-                if call not in current["calls"]:
-                    current["calls"].append(call)
+        if current is None:
+            continue
+
+        # Declarations
+        m = _DECL_COLON_RE.match(stmt) or _DECL_OLD_RE.match(stmt)
+        if m:
+            record_decl(current, m.group("type"), m.groupdict().get("attrs"), m.group("ents"))
+            continue
+        m = _INTENT_STMT_RE.match(stmt)
+        if m:
+            record_attr_statement(current, m.group("ents"), intent=norm_intent(m.group("i")))
+            continue
+        m = _OPTIONAL_STMT_RE.match(stmt)
+        if m:
+            record_attr_statement(current, m.group("ents"), optional=True)
+            continue
+        m = _DIM_STMT_RE.match(stmt)
+        if m:
+            record_attr_statement(current, m.group("ents"), dims=True)
+            continue
+        if _NONEXEC_RE.match(stmt):
+            continue
+
+        # Executable statement
+        current["body"].append(stmt)
+        for call in _CALL_RE.findall(stmt):
+            callee = call.split("%")[-1].strip()
+            if callee not in current["calls"]:
+                current["calls"].append(callee)
 
     return routines
 
@@ -120,265 +399,444 @@ def parse_fortran_file(path):
 # Build complete routine database
 # ------------------------------------------------------------
 
-def scan_source_tree(source_dir, extensions):
+def iter_source_files(sources, extensions, excluded_dirs):
+    exts = {(e if e.startswith(".") else "." + e).lower() for e in extensions}
+    seen_dirs = set()
+
+    for source in sources:
+        if source.is_file():
+            yield source
+            continue
+
+        for dirpath, dirnames, filenames in os.walk(source, followlinks=True):
+            real = os.path.realpath(dirpath)
+            if real in seen_dirs:               # symlink loops / overlapping sources
+                dirnames[:] = []
+                continue
+            seen_dirs.add(real)
+
+            dirnames[:] = sorted(d for d in dirnames if d not in excluded_dirs)
+            for filename in sorted(filenames):
+                path = Path(dirpath) / filename
+                if path.suffix.lower() in exts:
+                    yield path
+
+
+def scan_source_tree(sources, extensions, excluded_dirs):
     database = {}
+    duplicates = []
+    nfiles = 0
 
-    for extension in extensions:
-        for path in source_dir.rglob(f"*{extension}"):
-            routines = parse_fortran_file(path)
+    for path in iter_source_files(sources, extensions, excluded_dirs):
+        nfiles += 1
+        for routine in parse_fortran_file(path):
+            name = routine["name"]
+            if name in database:
+                duplicates.append((name, database[name]["file"], routine["file"]))
+            else:
+                database[name] = routine
 
-            for name, routine in routines.items():
+    return database, duplicates, nfiles
 
-                # If duplicate routine names exist, keep the first
-                # but warn the user.
-                if name in database:
-                    print(
-                        f"Warning: duplicate routine '{name}':\n"
-                        f"  {database[name]['file']}\n"
-                        f"  {routine['file']}"
-                    )
-                else:
-                    database[name] = routine
 
-    return database
+def resolve_function_references(database):
+    """
+    Functions are used as  y = f(x)  without CALL, so add them to the calls of
+    every routine that references a known function name.
+    """
+    functions = {n for n, r in database.items() if r["kind"] == "function"}
+    if not functions:
+        return
+
+    for routine in database.values():
+        for stmt in routine["body"]:
+            for ident in _FUNC_REF_RE.findall(stmt):
+                ident = ident.lower()
+                if ident not in functions or ident == routine["name"]:
+                    continue
+                if routine["decls"].get(ident, {}).get("dims"):    # it is an array
+                    continue
+                if ident not in routine["calls"]:
+                    routine["calls"].append(ident)
+
+
+def apply_ignore(database, patterns):
+    if not patterns:
+        return
+    patterns = [p.lower() for p in patterns]
+    for routine in database.values():
+        routine["calls"] = [
+            c for c in routine["calls"]
+            if not any(fnmatch.fnmatch(c, p) for p in patterns)
+        ]
 
 
 # ------------------------------------------------------------
-# Find routines reachable from PALS
+# Call tree
 # ------------------------------------------------------------
 
-def build_tree(root, database):
+def build_tree(root, database, max_depth=0, expand_once=False):
+    reachable = set()
+    expanded = set()
+    stack = []
+    counter = [0]
 
-    visited = set()
-
-    def recurse(name):
-
-        # Prevent infinite recursion:
-        #
-        # A -> B -> C -> A
-        #
-        if name in visited:
-            return {
-                "name": name,
-                "status": "recursive",
-                "children": [],
-            }
+    def recurse(name, depth):
+        counter[0] += 1
+        reachable.add(name)
 
         if name not in database:
-            return {
-                "name": name,
-                "status": "missing",
-                "children": [],
-            }
-
-        visited.add(name)
+            return {"name": name, "kind": "missing", "status": "missing", "children": []}
 
         routine = database[name]
+        base = {"name": name, "kind": routine["kind"]}
 
-        children = []
+        if name in stack:                         # real recursion: A -> B -> A
+            return {**base, "status": "recursive", "children": []}
+        if expand_once and name in expanded:
+            return {**base, "status": "repeated", "children": []}
+        if max_depth and depth >= max_depth and routine["calls"]:
+            return {**base, "status": "truncated", "children": []}
 
-        for call in routine["calls"]:
-            children.append(recurse(call))
+        expanded.add(name)
+        stack.append(name)
+        children = [recurse(c, depth + 1) for c in routine["calls"]]
+        stack.pop()
 
-        return {
-            "name": name,
-            "file": routine["file"],
-            "status": "found",
-            "children": children,
+        return {**base, "status": "found", "children": children}
+
+    tree = recurse(root, 0)
+    return tree, reachable, counter[0]
+
+
+# ------------------------------------------------------------
+# Inputs / outputs
+# ------------------------------------------------------------
+
+def infer_intent(arg, body):
+    """
+    Heuristic for old code without INTENT:
+      out?  assigned inside the routine
+      ?     passed to another routine (unknown)
+      in?   only read
+    """
+    a = re.escape(arg)
+    assign = re.compile(
+        rf"(?:^\s*|\)\s*|\bdo\s+(?:\d+\s*,?\s*)?){a}\s*"
+        rf"(?:\((?:[^()]|\([^()]*\))*\))?\s*=(?!=)")
+    passed = re.compile(
+        rf"\bcall\s+[a-z_]\w*(?:\s*%\s*[a-z_]\w*)*\s*\(.*\b{a}\b")
+
+    is_passed = False
+    for stmt in body:
+        if assign.search(stmt):
+            return "out?"
+        if passed.search(stmt):
+            is_passed = True
+    return "?" if is_passed else "in?"
+
+
+def classify_args(routine):
+    inputs, outputs, unknown = [], [], []
+
+    for arg in routine["args"]:
+        d = routine["decls"].get(arg, {})
+        intent = d.get("intent") or infer_intent(arg, routine["body"])
+        entry = {
+            "name": arg,
+            "type": d.get("type", ""),
+            "dims": d.get("dims", ""),
+            "intent": intent,
+            "optional": bool(d.get("optional")),
         }
+        if intent in ("in", "in?"):
+            inputs.append(entry)
+        elif intent in ("out", "out?"):
+            outputs.append(entry)
+        elif intent == "inout":
+            inputs.append(entry)
+            outputs.append(entry)
+        else:
+            unknown.append(entry)
 
-    return recurse(root.lower())
+    if routine["kind"] == "function":
+        res = routine["result"]
+        d = routine["decls"].get(res, {})
+        outputs.insert(0, {
+            "name": res,
+            "type": routine["prefix_type"] or d.get("type", ""),
+            "dims": d.get("dims", ""),
+            "intent": "return",
+            "optional": False,
+        })
+
+    return inputs, outputs, unknown
+
+
+def build_info(database, reachable):
+    callers = {n: [] for n in reachable}
+    for name in reachable:
+        routine = database.get(name)
+        if not routine:
+            continue
+        for callee in routine["calls"]:
+            if callee in callers and name not in callers[callee]:
+                callers[callee].append(name)
+
+    info = {}
+    for name in reachable:
+        routine = database.get(name)
+        if routine is None:
+            info[name] = {"name": name, "kind": "missing",
+                          "calls": [], "callers": sorted(callers[name])}
+            continue
+        inputs, outputs, unknown = classify_args(routine)
+        info[name] = {
+            "name": name,
+            "kind": routine["kind"],
+            "file": routine["file"],
+            "line": routine["line"],
+            "module": routine["module"],
+            "doc": routine["doc"],
+            "inputs": inputs,
+            "outputs": outputs,
+            "unknown": unknown,
+            "calls": routine["calls"],
+            "callers": sorted(callers[name]),
+        }
+    return info
 
 
 # ------------------------------------------------------------
 # HTML generation
 # ------------------------------------------------------------
 
-def tree_to_html(node, node_id="node0"):
+STATUS_LABELS = {
+    "missing": ("not found", "missing-label"),
+    "recursive": ("recursive", "recursive-label"),
+    "repeated": ("expanded above", "repeated-label"),
+    "truncated": ("max depth reached", "repeated-label"),
+}
 
+
+def tree_to_html(node):
+    status = node["status"]
+    kind = node["kind"]
     name = html.escape(node["name"])
 
-    status = node["status"]
+    label = ""
+    if status in STATUS_LABELS:
+        text, css = STATUS_LABELS[status]
+        label = f" <span class='{css}'>[{text}]</span>"
 
-    if status == "missing":
-        css = "missing"
-        extra = " <span class='missing-label'>[not found]</span>"
+    head = (f"<span class='name' data-name='{name}'>"
+            f"<span class='kind'>{KIND_LETTER[kind]}:</span> {name}</span>{label}")
 
-    elif status == "recursive":
-        css = "recursive"
-        extra = " <span class='recursive-label'>[recursive]</span>"
+    classes = [kind] + ([status] if status != "found" and status != kind else [])
+    cls = " ".join(classes)
 
-    else:
-        css = "routine"
-        extra = ""
+    if not node["children"]:
+        return f"<li class='{cls}'><span class='spacer'></span>{head}</li>"
 
-    children = node["children"]
-
-    if not children:
-        return (
-            f"<li class='{css}'>"
-            f"<span class='name'>{name}</span>{extra}"
-            f"</li>"
-        )
-
-    children_html = []
-
-    for i, child in enumerate(children):
-        child_id = f"{node_id}_{i}"
-        children_html.append(tree_to_html(child, child_id))
-
-    return f"""
-    <li class="{css}">
-        <span class="toggle"
-              onclick="toggle('{node_id}')">▼</span>
-        <span class="name">{name}</span>{extra}
-        <ul id="{node_id}">
-            {''.join(children_html)}
-        </ul>
-    </li>
-    """
+    kids = "".join(tree_to_html(c) for c in node["children"])
+    return f"<li class='{cls}'><span class='toggle'></span>{head}<ul>{kids}</ul></li>"
 
 
-def generate_html(tree, output_file):
-
-    tree_html = tree_to_html(tree)
-
-    html_content = f"""<!DOCTYPE html>
+HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
-
 <head>
-
 <meta charset="UTF-8">
-
-<title>Fortran Call Tree - PALS</title>
-
+<title>Fortran Call Tree - __ROOT__</title>
 <style>
-
-body {{
-    font-family: Arial, sans-serif;
-    margin: 30px;
-    background: #fafafa;
-    color: #222;
-}}
-
-h1 {{
-    margin-bottom: 5px;
-}}
-
-.info {{
-    color: #666;
-    margin-bottom: 25px;
-}}
-
-.tree {{
-    font-family: monospace;
-    font-size: 14px;
-}}
-
-.tree ul {{
-    list-style-type: none;
-    margin: 4px 0;
-    padding-left: 25px;
-}}
-
-.tree li {{
-    margin: 4px 0;
-}}
-
-.toggle {{
-    cursor: pointer;
-    display: inline-block;
-    width: 18px;
-    user-select: none;
-}}
-
-.name {{
-    cursor: default;
-}}
-
-.routine .name {{
-    color: #1565c0;
-}}
-
-.missing .name {{
-    color: #d32f2f;
-}}
-
-.recursive .name {{
-    color: #ef6c00;
-}}
-
-.missing-label {{
-    color: #d32f2f;
-    font-size: 11px;
-}}
-
-.recursive-label {{
-    color: #ef6c00;
-    font-size: 11px;
-}}
-
-button {{
-    margin-right: 8px;
-    padding: 6px 12px;
-    cursor: pointer;
-}}
-
+body { font-family: Arial, sans-serif; margin: 25px; background: #fafafa; color: #222; }
+h1 { margin: 0 0 5px 0; }
+.info { color: #666; margin-bottom: 15px; }
+.controls { margin-bottom: 15px; }
+.controls button { margin-right: 8px; padding: 6px 12px; cursor: pointer; }
+.controls input[type=search] { padding: 6px; width: 220px; margin-right: 10px; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: 25px; align-items: start; }
+.tree { font-family: monospace; font-size: 14px; overflow-x: auto; }
+.tree ul { list-style: none; margin: 3px 0; padding-left: 24px; }
+.tree li { margin: 3px 0; white-space: nowrap; }
+.toggle, .spacer { display: inline-block; width: 18px; user-select: none; }
+.toggle { cursor: pointer; }
+.toggle::before { content: "\25BC"; }
+li.collapsed > .toggle::before { content: "\25B6"; }
+li.collapsed > ul { display: none; }
+.name { cursor: pointer; padding: 0 2px; border-radius: 3px; }
+.name:hover { background: #e8eefc; }
+.name.selected { background: #ffe29a; }
+.name.match { background: #fff59d; outline: 1px solid #f9a825; }
+.kind { font-weight: bold; }
+.program > .name { color: #6a1b9a; }
+.subroutine > .name { color: #1565c0; }
+.function > .name { color: #2e7d32; }
+.missing > .name { color: #d32f2f; }
+.missing-label { color: #d32f2f; font-size: 11px; }
+.recursive-label { color: #ef6c00; font-size: 11px; }
+.repeated-label { color: #757575; font-size: 11px; }
+body.hide-missing li.missing { display: none; }
+#panel { position: sticky; top: 10px; max-height: 94vh; overflow: auto; background: #fff;
+         border: 1px solid #ddd; border-radius: 6px; padding: 14px; font-size: 14px; }
+#panel h2 { margin: 0 0 6px 0; font-size: 18px; }
+#panel h3 { margin: 14px 0 4px 0; font-size: 14px; color: #444; }
+#panel .meta { color: #666; font-size: 12px; word-break: break-all; }
+#panel pre.doc { background: #f5f5f5; padding: 8px; white-space: pre-wrap; font-size: 12px; }
+#panel table { border-collapse: collapse; width: 100%; font-size: 12px; }
+#panel th, #panel td { border: 1px solid #ddd; padding: 3px 6px; text-align: left; }
+#panel th { background: #f0f0f0; }
+#panel td.inferred { color: #ef6c00; font-style: italic; }
+#panel .none { color: #999; }
+#panel a { color: #1565c0; text-decoration: none; margin-right: 8px; white-space: nowrap; }
+#panel a:hover { text-decoration: underline; }
+#panel .legend { color: #888; font-size: 11px; margin-top: 10px; }
 </style>
-
-<script>
-
-function toggle(id) {{
-    const element = document.getElementById(id);
-
-    if (element.style.display === "none") {{
-        element.style.display = "block";
-    }} else {{
-        element.style.display = "none";
-    }}
-}}
-
-function expandAll() {{
-    document.querySelectorAll(".tree ul").forEach(
-        element => element.style.display = "block"
-    );
-}}
-
-function collapseAll() {{
-    document.querySelectorAll(".tree ul").forEach(
-        element => element.style.display = "none"
-    );
-}}
-
-</script>
-
 </head>
-
 <body>
 
 <h1>Fortran Call Tree</h1>
-
 <div class="info">
-Root routine: <b>PALS</b>
+Root routine: <b>__ROOT__</b> &middot; __STATS__<br>
+<span class="kind">p:</span> program &nbsp;
+<span class="kind">s:</span> subroutine &nbsp;
+<span class="kind">f:</span> function &nbsp;
+<span class="kind">?:</span> not found in the sources
 </div>
 
+<div class="controls">
 <button onclick="expandAll()">Expand all</button>
 <button onclick="collapseAll()">Collapse all</button>
-
-<div class="tree">
-
-<ul>
-{tree_html}
-</ul>
-
+<input id="search" type="search" placeholder="Search routine...">
+<label><input type="checkbox" id="hideMissing"> hide not-found</label>
 </div>
 
-</body>
+<div class="layout">
+<div class="tree"><ul>__TREE__</ul></div>
+<aside id="panel"><p class="none">Click a routine name to see its inputs and outputs.</p></aside>
+</div>
 
+<script id="info-data" type="application/json">__INFO__</script>
+<script>
+const INFO = JSON.parse(document.getElementById("info-data").textContent);
+const LETTER = {program: "p", subroutine: "s", function: "f", missing: "?"};
+const panel = document.getElementById("panel");
+
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+  ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+function table(items) {
+  if (!items.length) return '<p class="none">none</p>';
+  let h = '<table><tr><th>Name</th><th>Type</th><th>Dim</th><th>Intent</th></tr>';
+  for (const a of items) {
+    const inferred = a.intent.endsWith("?");
+    h += '<tr><td><code>' + esc(a.name) + '</code>' + (a.optional ? ' <i>(optional)</i>' : '') + '</td>'
+       + '<td>' + esc(a.type || "(implicit)") + '</td>'
+       + '<td>' + esc(a.dims) + '</td>'
+       + '<td' + (inferred ? ' class="inferred" title="Inferred from the code, no INTENT declared"' : '') + '>'
+       + esc(a.intent) + '</td></tr>';
+  }
+  return h + '</table>';
+}
+
+function links(names) {
+  if (!names.length) return '<span class="none">none</span>';
+  return names.map(n => INFO[n]
+    ? '<a href="#" data-goto="' + esc(n) + '">' + esc(n) + '</a>'
+    : '<span>' + esc(n) + '</span> ').join(" ");
+}
+
+function showInfo(name) {
+  const i = INFO[name];
+  if (!i) return;
+  document.querySelectorAll(".name.selected").forEach(n => n.classList.remove("selected"));
+  document.querySelectorAll('.name[data-name="' + name + '"]').forEach(n => n.classList.add("selected"));
+
+  let h = '<h2><span class="kind">' + LETTER[i.kind] + ':</span> ' + esc(i.name) + '</h2>';
+  if (i.kind === "missing") {
+    h += '<p class="none">No source found for this routine (library, intrinsic, '
+       + 'dummy procedure or outside the scanned folders).</p>';
+  } else {
+    h += '<div class="meta">' + esc(i.file) + ':' + i.line
+       + (i.module ? '<br>module: ' + esc(i.module) : '') + '</div>';
+    if (i.doc) h += '<h3>Description</h3><pre class="doc">' + esc(i.doc) + '</pre>';
+    h += '<h3>Inputs</h3>' + table(i.inputs);
+    h += '<h3>Outputs</h3>' + table(i.outputs);
+    if (i.unknown.length) h += '<h3>Direction unknown</h3>' + table(i.unknown);
+    h += '<div class="legend">Intent ending in "?" is inferred from the code '
+       + '(no INTENT declared): out? = assigned in the routine, in? = only read, '
+       + '? = only passed on to other routines.</div>';
+  }
+  h += '<h3>Calls</h3>' + links(i.calls);
+  h += '<h3>Called by</h3>' + links(i.callers);
+  panel.innerHTML = h;
+}
+
+function openParents(el) {
+  let li = el.closest("li");
+  while (li) {
+    li.classList.remove("collapsed");
+    li = li.parentElement.closest("li");
+  }
+}
+
+function reveal(name) {
+  const el = document.querySelector('.name[data-name="' + name + '"]');
+  if (el) { openParents(el); el.scrollIntoView({block: "center"}); }
+}
+
+function expandAll() {
+  document.querySelectorAll(".tree li.collapsed").forEach(li => li.classList.remove("collapsed"));
+}
+
+function collapseAll() {
+  document.querySelectorAll(".tree li").forEach(li => {
+    if (li.querySelector(":scope > ul")) li.classList.add("collapsed");
+  });
+  document.querySelectorAll(".tree > ul > li").forEach(li => li.classList.remove("collapsed"));
+}
+
+document.querySelector(".tree").addEventListener("click", e => {
+  const name = e.target.closest(".name");
+  if (e.target.classList.contains("toggle")) {
+    e.target.parentElement.classList.toggle("collapsed");
+  } else if (name) {
+    showInfo(name.dataset.name);
+  }
+});
+
+panel.addEventListener("click", e => {
+  const g = e.target.dataset.goto;
+  if (g) { e.preventDefault(); showInfo(g); reveal(g); }
+});
+
+document.getElementById("search").addEventListener("input", e => {
+  const q = e.target.value.trim().toLowerCase();
+  document.querySelectorAll(".name.match").forEach(n => n.classList.remove("match"));
+  if (!q) return;
+  document.querySelectorAll(".name").forEach(n => {
+    if (n.dataset.name.includes(q)) { n.classList.add("match"); openParents(n); }
+  });
+});
+
+document.getElementById("hideMissing").addEventListener("change", e =>
+  document.body.classList.toggle("hide-missing", e.target.checked));
+
+// Start with the first two levels open
+collapseAll();
+document.querySelectorAll(".tree > ul > li > ul > li").forEach(li => li.classList.remove("collapsed"));
+</script>
+</body>
 </html>
 """
 
-    output_file.write_text(html_content, encoding="utf-8")
+
+def generate_html(tree, info, root, stats, output_file):
+    page = (HTML_TEMPLATE
+            .replace("__ROOT__", html.escape(root))
+            .replace("__STATS__", html.escape(stats))
+            .replace("__TREE__", tree_to_html(tree))
+            .replace("__INFO__", json.dumps(info).replace("</", "<\\/")))
+    output_file.write_text(page, encoding="utf-8")
 
 
 # ------------------------------------------------------------
@@ -386,79 +844,92 @@ Root routine: <b>PALS</b>
 # ------------------------------------------------------------
 
 def main():
-
     parser = argparse.ArgumentParser(
-        description="Generate an interactive HTML call tree from Fortran source."
-    )
+        description="Generate an interactive HTML call tree from Fortran source.")
 
     parser.add_argument(
-        "source",
-        type=Path,
-        help="Root directory containing Fortran source files"
-    )
-
-    parser.add_argument(
-        "--root",
-        default="pals",
-        help="Root routine (default: pals)"
-    )
-
-    parser.add_argument(
-        "--output",
-        default="fortran_call_tree.html",
-        help="Output HTML file"
-    )
+        "sources", nargs="+", type=Path,
+        help="One or more folders (scanned recursively) or files with the Fortran sources")
+    parser.add_argument("--root", default="pals", help="Root routine (default: pals)")
+    parser.add_argument("--output", default="fortran_call_tree.html", help="Output HTML file")
+    parser.add_argument("--ext", action="append", default=[],
+                        help="Extra file extension to scan, e.g. --ext .inc (repeatable)")
+    parser.add_argument("--exclude", action="append", default=[],
+                        help="Folder name to skip, e.g. --exclude build (repeatable)")
+    parser.add_argument("--ignore", action="append", default=[],
+                        help="Routine name/pattern to leave out of the tree, "
+                             "e.g. --ignore 'mpi_*' (repeatable)")
+    parser.add_argument("--max-depth", type=int, default=0,
+                        help="Limit the depth of the tree (0 = unlimited)")
+    parser.add_argument("--expand-once", action="store_true",
+                        help="Expand each routine only the first time it appears "
+                             "(much smaller HTML for big code bases)")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Print every duplicate / missing routine")
 
     args = parser.parse_args()
 
-    extensions = [
-        ".f",
-        ".f90",
-        ".f95",
-        ".f03",
-        ".f08",
-        ".for",
-        ".F",
-        ".F90",
-    ]
+    sources = []
+    for source in args.sources:
+        if not source.exists():
+            print(f"ERROR: '{source}' does not exist.")
+            return 1
+        sources.append(source)
 
-    print(f"Scanning: {args.source}")
+    extensions = DEFAULT_EXTENSIONS + args.ext
+    excluded = DEFAULT_EXCLUDED_DIRS | set(args.exclude)
 
-    database = scan_source_tree(
-        args.source,
-        extensions
-    )
+    print("Scanning:")
+    for source in sources:
+        print(f"  {source}")
 
-    print(f"Found {len(database)} routines.")
+    database, duplicates, nfiles = scan_source_tree(sources, extensions, excluded)
+    print(f"Scanned {nfiles} files, found {len(database)} routines.")
+
+    if duplicates:
+        print(f"Warning: {len(duplicates)} duplicate routine definition(s); "
+              f"the first one found is used.")
+        shown = duplicates if args.verbose else duplicates[:10]
+        for name, first, other in shown:
+            print(f"  {name}:\n    {first}\n    {other}")
+        if len(shown) < len(duplicates):
+            print("  ... (use -v to list all)")
+
+    resolve_function_references(database)
+    apply_ignore(database, args.ignore)
 
     root = args.root.lower()
-
     if root not in database:
-        print(
-            f"\nERROR: Could not find root routine '{root}'."
-        )
-        print(
-            "Check the source directory and the routine name."
-        )
-        return
+        print(f"\nERROR: Could not find root routine '{root}'.")
+        close = difflib.get_close_matches(root, list(database), n=5)
+        if close:
+            print("Did you mean: " + ", ".join(close))
+        print("Check the source folders and the routine name.")
+        return 1
 
     print(f"Building call tree starting from '{root}'...")
+    tree, reachable, nodes = build_tree(root, database, args.max_depth, args.expand_once)
+    info = build_info(database, reachable)
 
-    tree = build_tree(
-        root,
-        database
-    )
+    missing = sorted(n for n in reachable if n not in database)
+    found = len(reachable) - len(missing)
+    if missing:
+        print(f"\n{len(missing)} called routine(s) not found in the sources "
+              f"(library, intrinsic, dummy procedure or missing folder?):")
+        shown = missing if args.verbose else missing[:40]
+        print("  " + ", ".join(shown) + (" ..." if len(shown) < len(missing) else ""))
 
+    if nodes > 100000 and not args.expand_once:
+        print(f"\nNote: the tree has {nodes} nodes; consider --expand-once or --max-depth.")
+
+    stats = f"{found} routines found, {len(missing)} not found, {nodes} tree nodes"
     output = Path(args.output)
-
-    generate_html(
-        tree,
-        output
-    )
+    generate_html(tree, info, root, stats, output)
 
     print(f"\nDone!")
     print(f"HTML file: {output.resolve()}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
