@@ -26,6 +26,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 from pathlib import Path
 
 sys.setrecursionlimit(20000)
@@ -293,10 +294,15 @@ def parse_fortran_file(path):
         return []
 
     routines = []
+    stack = []            # open routines (internal procedures nest)
     current = None
     module = ""
     iface_depth = 0
     in_type = False
+
+    def close(routine, end_idx):
+        routine["end_line"] = end_idx + 1
+        routine["source"] = "\n".join(raw[routine["line"] - 1:end_idx + 1])
 
     for start, end, stmt in statements:
 
@@ -326,6 +332,8 @@ def parse_fortran_file(path):
             continue
         if _END_MODULE_RE.match(stmt):
             module = ""
+            while stack:
+                close(stack.pop(), end)
             current = None
             continue
 
@@ -354,12 +362,16 @@ def parse_fortran_file(path):
                 "body": [],
                 "calls": [],
                 "doc": extract_doc(raw, start, end, fixed),
+                "fixed": fixed,
             }
             routines.append(current)
+            stack.append(current)
             continue
 
         if _END_ROUTINE_RE.match(stmt):
-            current = None
+            if stack:
+                close(stack.pop(), end)
+            current = stack[-1] if stack else None
             continue
 
         if current is None:
@@ -391,6 +403,9 @@ def parse_fortran_file(path):
             callee = call.split("%")[-1].strip()
             if callee not in current["calls"]:
                 current["calls"].append(callee)
+
+    while stack:                               # file ended without END
+        close(stack.pop(), len(raw) - 1)
 
     return routines
 
@@ -573,7 +588,7 @@ def classify_args(routine):
     return inputs, outputs, unknown
 
 
-def build_info(database, reachable):
+def build_info(database, reachable, include_source=True):
     callers = {n: [] for n in reachable}
     for name in reachable:
         routine = database.get(name)
@@ -591,7 +606,15 @@ def build_info(database, reachable):
                           "calls": [], "callers": sorted(callers[name])}
             continue
         inputs, outputs, unknown = classify_args(routine)
+        path = Path(routine["file"]).resolve()
         info[name] = {
+            "abs": str(path),
+            "uri": path.as_uri(),
+            "vscode": "vscode://file/" + urllib.parse.quote(path.as_posix().lstrip("/"), safe="/:")
+                      + f":{routine['line']}",
+            "end_line": routine["end_line"],
+            "fixed": routine["fixed"],
+            "source": routine["source"] if include_source else "",
             "name": name,
             "kind": routine["kind"],
             "file": routine["file"],
@@ -654,7 +677,7 @@ h1 { margin: 0 0 5px 0; }
 .controls { margin-bottom: 15px; }
 .controls button { margin-right: 8px; padding: 6px 12px; cursor: pointer; }
 .controls input[type=search] { padding: 6px; width: 220px; margin-right: 10px; }
-.layout { display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: 25px; align-items: start; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) var(--panel-w, 440px); gap: 25px; align-items: start; }
 .tree { font-family: monospace; font-size: 14px; overflow-x: auto; }
 .tree ul { list-style: none; margin: 3px 0; padding-left: 24px; }
 .tree li { margin: 3px 0; white-space: nowrap; }
@@ -689,6 +712,13 @@ body.hide-missing li.missing { display: none; }
 #panel .none { color: #999; }
 #panel a { color: #1565c0; text-decoration: none; margin-right: 8px; white-space: nowrap; }
 #panel a:hover { text-decoration: underline; }
+#panel .actions { margin: 8px 0 2px 0; }
+#panel .actions a { background: #e8eefc; padding: 3px 8px; border-radius: 4px; }
+#panel pre.src { background: #f7f7f7; border: 1px solid #e0e0e0; padding: 6px; font-size: 12px;
+                 line-height: 1.35; overflow: auto; max-height: 60vh; white-space: pre; }
+#panel .ln { color: #aaa; display: inline-block; width: 44px; text-align: right;
+             margin-right: 10px; user-select: none; }
+#panel .cm { color: #2e7d32; }
 #panel .legend { color: #888; font-size: 11px; margin-top: 10px; }
 </style>
 </head>
@@ -706,6 +736,7 @@ Root routine: <b>__ROOT__</b> &middot; __STATS__<br>
 <div class="controls">
 <button onclick="expandAll()">Expand all</button>
 <button onclick="collapseAll()">Collapse all</button>
+<button onclick="toggleWide()">Wider panel</button>
 <input id="search" type="search" placeholder="Search routine...">
 <label><input type="checkbox" id="hideMissing"> hide not-found</label>
 </div>
@@ -745,6 +776,26 @@ function links(names) {
     : '<span>' + esc(n) + '</span> ').join(" ");
 }
 
+function srcHtml(i) {
+  return i.source.split("\n").map((l, k) => {
+    const isComment = l.trim().startsWith("!") || (i.fixed && /^[cC*]/.test(l));
+    let code = esc(l);
+    if (!isComment) {
+      code = code.replace(/\b(call\s+)([A-Za-z_]\w*)/gi, (m, a, b) =>
+        INFO[b.toLowerCase()]
+          ? a + '<a href="#" data-goto="' + b.toLowerCase() + '">' + b + '</a>' : m);
+    }
+    return '<span class="ln">' + (i.line + k) + '</span>'
+         + (isComment ? '<span class="cm">' + code + '</span>' : code);
+  }).join("\n");
+}
+
+let wide = false;
+function toggleWide() {
+  wide = !wide;
+  document.querySelector(".layout").style.setProperty("--panel-w", wide ? "860px" : "440px");
+}
+
 function showInfo(name) {
   const i = INFO[name];
   if (!i) return;
@@ -758,10 +809,15 @@ function showInfo(name) {
   } else {
     h += '<div class="meta">' + esc(i.file) + ':' + i.line
        + (i.module ? '<br>module: ' + esc(i.module) : '') + '</div>';
+    h += '<div class="actions"><a href="' + esc(i.vscode) + '">Open in VS Code</a>'
+       + '<a href="' + esc(i.uri) + '" target="_blank">Open file</a>'
+       + '<a href="#" data-copy="' + esc(i.abs + ':' + i.line) + '">Copy path</a></div>';
     if (i.doc) h += '<h3>Description</h3><pre class="doc">' + esc(i.doc) + '</pre>';
     h += '<h3>Inputs</h3>' + table(i.inputs);
     h += '<h3>Outputs</h3>' + table(i.outputs);
     if (i.unknown.length) h += '<h3>Direction unknown</h3>' + table(i.unknown);
+    if (i.source) h += '<h3>Source (lines ' + i.line + '-' + i.end_line + ')</h3>'
+       + '<pre class="src">' + srcHtml(i) + '</pre>';
     h += '<div class="legend">Intent ending in "?" is inferred from the code '
        + '(no INTENT declared): out? = assigned in the routine, in? = only read, '
        + '? = only passed on to other routines.</div>';
@@ -806,7 +862,12 @@ document.querySelector(".tree").addEventListener("click", e => {
 
 panel.addEventListener("click", e => {
   const g = e.target.dataset.goto;
+  const c = e.target.dataset.copy;
   if (g) { e.preventDefault(); showInfo(g); reveal(g); }
+  if (c) {
+    e.preventDefault();
+    navigator.clipboard.writeText(c).catch(() => window.prompt("Copy path:", c));
+  }
 });
 
 document.getElementById("search").addEventListener("input", e => {
@@ -864,6 +925,8 @@ def main():
     parser.add_argument("--expand-once", action="store_true",
                         help="Expand each routine only the first time it appears "
                              "(much smaller HTML for big code bases)")
+    parser.add_argument("--no-source", action="store_true",
+                        help="Do not embed routine source code in the HTML (smaller file)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print every duplicate / missing routine")
 
@@ -909,7 +972,7 @@ def main():
 
     print(f"Building call tree starting from '{root}'...")
     tree, reachable, nodes = build_tree(root, database, args.max_depth, args.expand_once)
-    info = build_info(database, reachable)
+    info = build_info(database, reachable, include_source=not args.no_source)
 
     missing = sorted(n for n in reachable if n not in database)
     found = len(reachable) - len(missing)
@@ -926,8 +989,11 @@ def main():
     output = Path(args.output)
     generate_html(tree, info, root, stats, output)
 
+    size_mb = output.stat().st_size / 1e6
     print(f"\nDone!")
-    print(f"HTML file: {output.resolve()}")
+    print(f"HTML file: {output.resolve()} ({size_mb:.1f} MB)")
+    if size_mb > 50:
+        print("Note: the file is large; use --no-source, --expand-once or --max-depth to shrink it.")
     return 0
 
 
