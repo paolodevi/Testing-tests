@@ -677,7 +677,7 @@ h1 { margin: 0 0 5px 0; }
 .controls { margin-bottom: 15px; }
 .controls button { margin-right: 8px; padding: 6px 12px; cursor: pointer; }
 .controls input[type=search] { padding: 6px; width: 220px; margin-right: 10px; }
-.layout { display: grid; grid-template-columns: minmax(0, 1fr) var(--panel-w, 440px); gap: 25px; align-items: start; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 8px var(--panel-w, 440px); gap: 10px; align-items: start; }
 .tree { font-family: monospace; font-size: 14px; overflow-x: auto; }
 .tree ul { list-style: none; margin: 3px 0; padding-left: 24px; }
 .tree li { margin: 3px 0; white-space: nowrap; }
@@ -699,6 +699,10 @@ li.collapsed > ul { display: none; }
 .recursive-label { color: #ef6c00; font-size: 11px; }
 .repeated-label { color: #757575; font-size: 11px; }
 body.hide-missing li.missing { display: none; }
+#resizer { position: sticky; top: 10px; height: 94vh; background: #d5d9de; border-radius: 4px;
+           cursor: col-resize; touch-action: none; }
+#resizer:hover, #resizer.dragging { background: #90a4ae; }
+body.resizing { user-select: none; cursor: col-resize; }
 #panel { position: sticky; top: 10px; max-height: 94vh; overflow: auto; background: #fff;
          border: 1px solid #ddd; border-radius: 6px; padding: 14px; font-size: 14px; }
 #panel h2 { margin: 0 0 6px 0; font-size: 18px; }
@@ -743,6 +747,7 @@ Root routine: <b>__ROOT__</b> &middot; __STATS__<br>
 
 <div class="layout">
 <div class="tree"><ul>__TREE__</ul></div>
+<div id="resizer" title="Drag to resize the panel"></div>
 <aside id="panel"><p class="none">Click a routine name to see its inputs and outputs.</p></aside>
 </div>
 
@@ -795,6 +800,31 @@ function toggleWide() {
   wide = !wide;
   document.querySelector(".layout").style.setProperty("--panel-w", wide ? "860px" : "440px");
 }
+
+// Drag the bar between tree and panel to resize the panel
+(function () {
+  const bar = document.getElementById("resizer");
+  const layout = document.querySelector(".layout");
+  bar.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    bar.classList.add("dragging");
+    document.body.classList.add("resizing");
+  });
+  bar.addEventListener("pointermove", e => {
+    if (!bar.hasPointerCapture(e.pointerId)) return;
+    const r = layout.getBoundingClientRect();
+    const w = Math.max(280, Math.min(r.width - 200, r.right - e.clientX - 14));
+    layout.style.setProperty("--panel-w", w + "px");
+  });
+  const stop = e => {
+    bar.classList.remove("dragging");
+    document.body.classList.remove("resizing");
+    if (bar.hasPointerCapture(e.pointerId)) bar.releasePointerCapture(e.pointerId);
+  };
+  bar.addEventListener("pointerup", stop);
+  bar.addEventListener("pointercancel", stop);
+})();
 
 function showInfo(name) {
   const i = INFO[name];
