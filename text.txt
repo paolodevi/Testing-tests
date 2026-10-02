@@ -1,129 +1,464 @@
-%% FCS System Identification Pipeline
-%
-% Goal: identify a low-order, real-time-deployable model of the FCS
-%   Inputs:  nz, nx, q, theta, alpha   (5 states/signals)
-%   Outputs: flap, fore                (2 control surface deflections)
-%
-% This is a template - edit the marked sections to match your actual
-% data format and MATLAB toolbox version before running.
-%
-% Requires: System Identification Toolbox
+#!/usr/bin/env python3
 
-clear; clc; close all;
+import argparse
+import html
+import re
+from pathlib import Path
 
-%% ---------------- 1. USER SETTINGS ----------------
-Ts          = 0.02;                        % [s] MUST match the loop rate
-                                            % of the real-time code that will
-                                            % run this model
-inputNames  = {'nz','nx','q','theta','alpha'};
-outputNames = {'flap','fore'};
-modelOrders = 1:8;                         % state-space orders to sweep
 
-%% ---------------- 2. LOAD YOUR DATA ----------------
-% Replace this section with your own loading code. You need a cell array
-% `expData`, one struct per simulation run, each containing equally
-% sampled vectors for the 5 inputs and 2 outputs, e.g.:
-%
-%   expData{k}.nz, expData{k}.nx, expData{k}.q,
-%   expData{k}.theta, expData{k}.alpha, expData{k}.flap, expData{k}.fore
-%
-% expData = load(...);   % <-- populate this
+# ------------------------------------------------------------
+# Fortran parser
+# ------------------------------------------------------------
 
-nExp = numel(expData); %#ok<USENS>
+ROUTINE_RE = re.compile(
+    r"^\s*(?:"
+    r"program\s+(\w+)|"
+    r"subroutine\s+(\w+)|"
+    r"(?:recursive\s+|pure\s+|elemental\s+)?function\s+(\w+)"
+    r")",
+    re.IGNORECASE,
+)
 
-%% ---------------- 3. BUILD IDDATA OBJECTS (detrended around trim) ----------------
-dataSets = cell(nExp,1);
-trimVals = cell(nExp,1);   % keep trim offsets so you can re-add them later
+CALL_RE = re.compile(
+    r"\bcall\s+([a-zA-Z_]\w*)",
+    re.IGNORECASE,
+)
 
-for k = 1:nExp
-    e = expData{k};
 
-    U = [e.nz(:), e.nx(:), e.q(:), e.theta(:), e.alpha(:)];
-    Y = [e.flap(:), e.fore(:)];
+def strip_comments(line):
+    """
+    Remove comments from a Fortran line.
 
-    % Trim = value at start of the run. If your runs don't start at trim,
-    % replace with e.g. mean(U(1:N0,:)) over a steady pre-maneuver window.
-    uTrim = U(1,:);
-    yTrim = Y(1,:);
-    trimVals{k} = struct('u', uTrim, 'y', yTrim);
+    Handles:
+      ! comments
+      fixed-form comments beginning with C/c/* in column 1
+    """
 
-    ds = iddata(Y - yTrim, U - uTrim, Ts, ...
-        'InputName', inputNames, 'OutputName', outputNames, ...
-        'ExperimentName', sprintf('exp%02d', k));
-    dataSets{k} = ds;
-end
+    if not line.strip():
+        return ""
 
-data = merge(dataSets{:});   % single multi-experiment iddata object
+    # Fixed-form comment
+    if line[0] in ("c", "C", "*"):
+        return ""
 
-%% ---------------- 4. CHECK INPUT COLLINEARITY ----------------
-% nz, nx, q, theta, alpha are physically coupled through the equations of
-% motion - high correlation here flags poor identifiability for those
-% channels, independent of how good the model fit looks later.
-for k = 1:nExp
-    R = corr(dataSets{k}.u);
-    fprintf('--- Experiment %d input correlation ---\n', k);
-    disp(array2table(R, 'VariableNames', inputNames, 'RowNames', inputNames));
-end
+    # Remove ! outside quoted strings
+    result = []
+    quote = None
 
-%% ---------------- 5. STATE-SPACE MODEL ORDER SWEEP ----------------
-opt = ssestOptions('EnforceStability', true, 'Display', 'off');
-nu  = numel(inputNames);
+    for char in line:
+        if char in ("'", '"'):
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
 
-% 'Feedthrough', false(1,nu): no direct D-term from inputs to outputs.
-% This avoids an algebraic loop once the model is closed back into the
-% rest of the simulation, and matches physical reality (actuators/filters
-% always add some delay). If your MATLAB version doesn't accept
-% 'Feedthrough' as a direct ssest argument, fix D=0 instead via an idss
-% init model with Structure.d.Free = false, Structure.d.Value = 0, and
-% pass that init model to ssest in place of the order.
+        if char == "!" and quote is None:
+            break
 
-models = cell(numel(modelOrders),1);
-fitPct = cell(numel(modelOrders),1);
+        result.append(char)
 
-for i = 1:numel(modelOrders)
-    n = modelOrders(i);
-    m = ssest(data, n, 'Feedthrough', false(1,nu), opt);
-    models{i} = m;
-    [~, fit] = compare(data, m);
-    fitPct{i} = fit;   % shape depends on number of experiments - inspect once
-    fprintf('Order %d: fit = %s\n', n, mat2str(round(fit,1)));
-end
+    return "".join(result)
 
-%% ---------------- 6. PICK A MODEL ----------------
-% Plot fit vs. order and look for the knee - lowest order that captures
-% most of the achievable fit, not the single highest-fit order (that's
-% usually just fitting noise / overfitting the correlated inputs).
-figure;
-hold on;
-for i = 1:numel(modelOrders)
-    plot(modelOrders(i)*ones(size(fitPct{i})), fitPct{i}, 'o');
-end
-xlabel('Model order'); ylabel('Fit [%]');
-title('Fit vs. state-space order'); grid on;
 
-chosenOrder = 4;                          % <-- set from the plot above
-sysID = models{modelOrders == chosenOrder};
+def parse_fortran_file(path):
+    """
+    Return:
+        routines = {
+            routine_name: {
+                "name": ...,
+                "file": ...,
+                "calls": [...]
+            }
+        }
+    """
 
-figure; compare(data, sysID);
-figure; resid(data, sysID);
+    routines = {}
 
-%% ---------------- 7. CONVERT FOR DEPLOYMENT ----------------
-sysSS   = ss(sysID);              % strip idss metadata -> plain ss
-sysSS_d = sysSS;
-if sysSS.Ts == 0
-    sysSS_d = c2d(sysSS, Ts, 'zoh');
-end
+    try:
+        text = path.read_text(errors="ignore")
+    except Exception as e:
+        print(f"Warning: cannot read {path}: {e}")
+        return routines
 
-% sysSS_d.A, .B, .C, .D are the four matrices to hand-port into your
-% real-time code, or drop directly into a Discrete State-Space block in
-% Simulink. Remember: this model works on DEVIATIONS from trim - add
-% trimVals{k}.u / trimVals{k}.y back at the input/output boundaries when
-% wiring it into the full simulation.
+    current = None
 
-save('fcs_reduced_model.mat', 'sysSS_d', 'trimVals', 'inputNames', 'outputNames', 'Ts');
+    for raw_line in text.splitlines():
+        line = strip_comments(raw_line)
 
-%% ---------------- 8. (STUB) CLOSED-LOOP VALIDATION ----------------
-% Before trusting this in production: substitute sysSS_d for the real FCS
-% block inside the full simulation and run it end-to-end. Open-loop fit
-% above does NOT guarantee closed-loop stability or behavior - that check
-% has to happen here, in your actual sim, not in this script.
+        if not line.strip():
+            continue
+
+        # Find routine definition
+        match = ROUTINE_RE.match(line)
+
+        if match:
+            name = next(group for group in match.groups() if group)
+
+            name = name.lower()
+
+            current = {
+                "name": name,
+                "file": str(path),
+                "calls": [],
+            }
+
+            routines[name] = current
+            continue
+
+        # Find CALL statements inside current routine
+        if current:
+            for call in CALL_RE.findall(line):
+                call = call.lower()
+
+                if call not in current["calls"]:
+                    current["calls"].append(call)
+
+    return routines
+
+
+# ------------------------------------------------------------
+# Build complete routine database
+# ------------------------------------------------------------
+
+def scan_source_tree(source_dir, extensions):
+    database = {}
+
+    for extension in extensions:
+        for path in source_dir.rglob(f"*{extension}"):
+            routines = parse_fortran_file(path)
+
+            for name, routine in routines.items():
+
+                # If duplicate routine names exist, keep the first
+                # but warn the user.
+                if name in database:
+                    print(
+                        f"Warning: duplicate routine '{name}':\n"
+                        f"  {database[name]['file']}\n"
+                        f"  {routine['file']}"
+                    )
+                else:
+                    database[name] = routine
+
+    return database
+
+
+# ------------------------------------------------------------
+# Find routines reachable from PALS
+# ------------------------------------------------------------
+
+def build_tree(root, database):
+
+    visited = set()
+
+    def recurse(name):
+
+        # Prevent infinite recursion:
+        #
+        # A -> B -> C -> A
+        #
+        if name in visited:
+            return {
+                "name": name,
+                "status": "recursive",
+                "children": [],
+            }
+
+        if name not in database:
+            return {
+                "name": name,
+                "status": "missing",
+                "children": [],
+            }
+
+        visited.add(name)
+
+        routine = database[name]
+
+        children = []
+
+        for call in routine["calls"]:
+            children.append(recurse(call))
+
+        return {
+            "name": name,
+            "file": routine["file"],
+            "status": "found",
+            "children": children,
+        }
+
+    return recurse(root.lower())
+
+
+# ------------------------------------------------------------
+# HTML generation
+# ------------------------------------------------------------
+
+def tree_to_html(node, node_id="node0"):
+
+    name = html.escape(node["name"])
+
+    status = node["status"]
+
+    if status == "missing":
+        css = "missing"
+        extra = " <span class='missing-label'>[not found]</span>"
+
+    elif status == "recursive":
+        css = "recursive"
+        extra = " <span class='recursive-label'>[recursive]</span>"
+
+    else:
+        css = "routine"
+        extra = ""
+
+    children = node["children"]
+
+    if not children:
+        return (
+            f"<li class='{css}'>"
+            f"<span class='name'>{name}</span>{extra}"
+            f"</li>"
+        )
+
+    children_html = []
+
+    for i, child in enumerate(children):
+        child_id = f"{node_id}_{i}"
+        children_html.append(tree_to_html(child, child_id))
+
+    return f"""
+    <li class="{css}">
+        <span class="toggle"
+              onclick="toggle('{node_id}')">▼</span>
+        <span class="name">{name}</span>{extra}
+        <ul id="{node_id}">
+            {''.join(children_html)}
+        </ul>
+    </li>
+    """
+
+
+def generate_html(tree, output_file):
+
+    tree_html = tree_to_html(tree)
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<title>Fortran Call Tree - PALS</title>
+
+<style>
+
+body {{
+    font-family: Arial, sans-serif;
+    margin: 30px;
+    background: #fafafa;
+    color: #222;
+}}
+
+h1 {{
+    margin-bottom: 5px;
+}}
+
+.info {{
+    color: #666;
+    margin-bottom: 25px;
+}}
+
+.tree {{
+    font-family: monospace;
+    font-size: 14px;
+}}
+
+.tree ul {{
+    list-style-type: none;
+    margin: 4px 0;
+    padding-left: 25px;
+}}
+
+.tree li {{
+    margin: 4px 0;
+}}
+
+.toggle {{
+    cursor: pointer;
+    display: inline-block;
+    width: 18px;
+    user-select: none;
+}}
+
+.name {{
+    cursor: default;
+}}
+
+.routine .name {{
+    color: #1565c0;
+}}
+
+.missing .name {{
+    color: #d32f2f;
+}}
+
+.recursive .name {{
+    color: #ef6c00;
+}}
+
+.missing-label {{
+    color: #d32f2f;
+    font-size: 11px;
+}}
+
+.recursive-label {{
+    color: #ef6c00;
+    font-size: 11px;
+}}
+
+button {{
+    margin-right: 8px;
+    padding: 6px 12px;
+    cursor: pointer;
+}}
+
+</style>
+
+<script>
+
+function toggle(id) {{
+    const element = document.getElementById(id);
+
+    if (element.style.display === "none") {{
+        element.style.display = "block";
+    }} else {{
+        element.style.display = "none";
+    }}
+}}
+
+function expandAll() {{
+    document.querySelectorAll(".tree ul").forEach(
+        element => element.style.display = "block"
+    );
+}}
+
+function collapseAll() {{
+    document.querySelectorAll(".tree ul").forEach(
+        element => element.style.display = "none"
+    );
+}}
+
+</script>
+
+</head>
+
+<body>
+
+<h1>Fortran Call Tree</h1>
+
+<div class="info">
+Root routine: <b>PALS</b>
+</div>
+
+<button onclick="expandAll()">Expand all</button>
+<button onclick="collapseAll()">Collapse all</button>
+
+<div class="tree">
+
+<ul>
+{tree_html}
+</ul>
+
+</div>
+
+</body>
+
+</html>
+"""
+
+    output_file.write_text(html_content, encoding="utf-8")
+
+
+# ------------------------------------------------------------
+# Main
+# ------------------------------------------------------------
+
+def main():
+
+    parser = argparse.ArgumentParser(
+        description="Generate an interactive HTML call tree from Fortran source."
+    )
+
+    parser.add_argument(
+        "source",
+        type=Path,
+        help="Root directory containing Fortran source files"
+    )
+
+    parser.add_argument(
+        "--root",
+        default="pals",
+        help="Root routine (default: pals)"
+    )
+
+    parser.add_argument(
+        "--output",
+        default="fortran_call_tree.html",
+        help="Output HTML file"
+    )
+
+    args = parser.parse_args()
+
+    extensions = [
+        ".f",
+        ".f90",
+        ".f95",
+        ".f03",
+        ".f08",
+        ".for",
+        ".F",
+        ".F90",
+    ]
+
+    print(f"Scanning: {args.source}")
+
+    database = scan_source_tree(
+        args.source,
+        extensions
+    )
+
+    print(f"Found {len(database)} routines.")
+
+    root = args.root.lower()
+
+    if root not in database:
+        print(
+            f"\nERROR: Could not find root routine '{root}'."
+        )
+        print(
+            "Check the source directory and the routine name."
+        )
+        return
+
+    print(f"Building call tree starting from '{root}'...")
+
+    tree = build_tree(
+        root,
+        database
+    )
+
+    output = Path(args.output)
+
+    generate_html(
+        tree,
+        output
+    )
+
+    print(f"\nDone!")
+    print(f"HTML file: {output.resolve()}")
+
+
+if __name__ == "__main__":
+    main()
