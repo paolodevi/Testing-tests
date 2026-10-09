@@ -1,81 +1,191 @@
-%% ---- User settings -------------------------------------------------
-% Map the columns of your Sim array here
-colT     = 1;    % time [s]  (set [] if you have no time column)
-colX     = 2;    % x (north)
-colY     = 3;    % y (east)
-colZ     = 4;    % z
-colRoll  = 5;
-colPitch = 6;
-colYaw   = 7;
+function aircraftViewer(t, x, y, z, pitch, roll, yaw, varargin)
+%AIRCRAFTVIEWER  3D trajectory + aircraft model driven by a time slider.
+%
+%   aircraftViewer(t, x, y, z, pitch, roll, yaw)
+%   aircraftViewer(..., 'AngleUnit','rad', 'ZUp',true, ...)
+%
+%   Inputs (vectors of the same length N, t strictly increasing):
+%     t              time [s]
+%     x, y, z        position (default: NED frame, z positive DOWN)
+%     pitch,roll,yaw Euler angles (321 sequence: yaw -> pitch -> roll),
+%                    body-to-NED, default in degrees
+%
+%   Options (name-value):
+%     'AngleUnit'       'deg' (default) | 'rad'
+%     'ZUp'             false (default, z = down) | true (z = altitude, up)
+%     'ModelScale'      scale factor for the model (default: auto)
+%     'UseToolboxModel' true (default) uses Aerospace Toolbox 'pa24-250.ac',
+%                       falls back to a simple built-in model if unavailable
+%     'ModelFix'        3x3 matrix to re-orient the toolbox model so that
+%                       x = nose, y = right wing, z = down (default eye(3))
+%     'PlaybackSpeed'   speed of the Play button (default 1 = real time)
 
-anglesInDegrees = true;    % true if roll/pitch/yaw are in deg
-zIsAltitude     = false;   % true if z is positive UP (it will be flipped to NED)
-fps             = 30;      % animation frame rate
-timeScaling     = 1;       % 1 = real time, 5 = 5x faster, etc.
-recordVideo     = false;
-videoFile       = 'flight.avi';
+%% ---- Parse inputs -----------------------------------------------------
+p = inputParser;
+addParameter(p, 'AngleUnit',       'deg');
+addParameter(p, 'ZUp',             false);
+addParameter(p, 'ModelScale',      []);
+addParameter(p, 'UseToolboxModel', true);
+addParameter(p, 'ModelFix',        eye(3));
+addParameter(p, 'PlaybackSpeed',   1);
+parse(p, varargin{:});
+o = p.Results;
 
-%% ---- Extract data --------------------------------------------------
-if isempty(colT)
-    dt = 0.01;                                  % set your sample time
-    t = (0:size(Sim,1)-1)' * dt;
+t = t(:); x = x(:); y = y(:); z = z(:);
+pitch = pitch(:); roll = roll(:); yaw = yaw(:);
+N = numel(t);
+assert(N > 1, 'Need at least two samples.');
+assert(all(diff(t) > 0), 't must be strictly increasing.');
+
+if strcmpi(o.AngleUnit, 'deg')
+    pitch = deg2rad(pitch); roll = deg2rad(roll); yaw = deg2rad(yaw);
+end
+if o.ZUp, z = -z; end          % internally everything is NED (z down)
+
+%% ---- Rotation matrices (body -> NED), 3-2-1 sequence ------------------
+R = zeros(3, 3, N);
+for k = 1:N
+    cy = cos(yaw(k));   sy = sin(yaw(k));
+    cp = cos(pitch(k)); sp = sin(pitch(k));
+    cr = cos(roll(k));  sr = sin(roll(k));
+    Rz = [cy -sy 0; sy cy 0; 0 0 1];
+    Ry = [cp 0 sp; 0 1 0; -sp 0 cp];
+    Rx = [1 0 0; 0 cr -sr; 0 sr cr];
+    R(:,:,k) = Rz * Ry * Rx;
+end
+
+%% ---- Aircraft geometry ------------------------------------------------
+V = []; F = []; C = [];
+if o.UseToolboxModel
+    try
+        h   = aero.Animation;
+        idx = h.createBody('pa24-250.ac', 'Ac3d');
+        g   = h.Bodies{idx}.Geometry;
+        V = g.Vertices; F = g.Faces; C = g.FaceVertexCData;
+        V = (o.ModelFix * V')';
+        delete(h);
+    catch
+        warning('Toolbox model not available, using simple built-in model.');
+        V = [];
+    end
+end
+useSimple = isempty(V);
+if useSimple
+    [V, F, C] = simpleAircraft();
+end
+
+% Scale model relative to the size of the trajectory
+ext = max([range(x), range(y), range(z), eps]);
+if isempty(o.ModelScale)
+    modelSize = max(max(V) - min(V));
+    scale = 0.08 * ext / modelSize;
 else
-    t = Sim(:,colT);
+    scale = o.ModelScale;
 end
-x     = Sim(:,colX);
-y     = Sim(:,colY);
-z     = Sim(:,colZ);
-roll  = Sim(:,colRoll);
-pitch = Sim(:,colPitch);
-yaw   = Sim(:,colYaw);
+V = V * scale;
 
-if anglesInDegrees
-    roll = deg2rad(roll);  pitch = deg2rad(pitch);  yaw = deg2rad(yaw);
+%% ---- Figure and axes --------------------------------------------------
+fig = figure('Name', 'Aircraft trajectory viewer', 'Color', 'w', ...
+             'NumberTitle', 'off');
+ax = axes('Parent', fig, 'Position', [0.08 0.14 0.88 0.82]);
+hold(ax, 'on'); grid(ax, 'on'); box(ax, 'on');
+plot3(ax, x, y, z, 'b-', 'LineWidth', 1.2);                 % full trajectory
+plot3(ax, x(1), y(1), z(1), 'go', 'MarkerFaceColor', 'g');  % start
+plot3(ax, x(end), y(end), z(end), 'rs', 'MarkerFaceColor', 'r'); % end
+axis(ax, 'equal');
+set(ax, 'ZDir', 'reverse');                % NED: altitude shown upwards
+xlabel(ax, 'x (North) [m]'); ylabel(ax, 'y (East) [m]'); zlabel(ax, 'z (Down) [m]');
+view(ax, 3);
+pad = 0.1 * ext;
+xlim(ax, [min(x)-pad, max(x)+pad]);
+ylim(ax, [min(y)-pad, max(y)+pad]);
+zlim(ax, [min(z)-pad, max(z)+pad]);
+
+% Aircraft patch inside an hgtransform (moved/rotated by a 4x4 matrix)
+tf = hgtransform('Parent', ax);
+if ~isempty(C) && size(C, 1) == size(V, 1)
+    fc = 'interp';
+else
+    fc = 'flat';
 end
-if zIsAltitude
-    z = -z;                                     % NED: z positive down
+if useSimple, ec = 'k'; else, ec = 'none'; end
+patch('Parent', tf, 'Vertices', V, 'Faces', F, 'FaceVertexCData', C, ...
+      'FaceColor', fc, 'EdgeColor', ec);
+camlight(ax, 'headlight'); lighting(ax, 'gouraud'); material(ax, 'dull');
+
+% Info text
+info = annotation(fig, 'textbox', [0.08 0.90 0.4 0.07], 'EdgeColor', 'none', ...
+                  'FontName', 'Consolas', 'FontSize', 9, 'Interpreter', 'none');
+
+%% ---- Controls ---------------------------------------------------------
+sl = uicontrol(fig, 'Style', 'slider', 'Units', 'normalized', ...
+               'Position', [0.15 0.03 0.75 0.04], ...
+               'Min', t(1), 'Max', t(end), 'Value', t(1), ...
+               'SliderStep', [1/(N-1), min(1, 10/(N-1))]);
+btn = uicontrol(fig, 'Style', 'pushbutton', 'Units', 'normalized', ...
+                'Position', [0.05 0.03 0.08 0.04], 'String', 'Play', ...
+                'Callback', @onPlay);
+addlistener(sl, 'Value', 'PostSet', @(~,~) onSlide());   % continuous update
+playing = false;
+
+update(1);
+
+%% ---- Nested functions -------------------------------------------------
+    function onSlide()
+        k = round(interp1(t, 1:N, sl.Value, 'nearest', 'extrap'));
+        k = max(1, min(N, k));
+        update(k);
+    end
+
+    function update(k)
+        M = eye(4);
+        M(1:3, 1:3) = R(:, :, k);
+        M(1:3, 4)   = [x(k); y(k); z(k)];
+        tf.Matrix = M;
+        info.String = sprintf(['t = %8.3f s\n' ...
+            'pos = [%.1f %.1f %.1f]\n' ...
+            'pitch/roll/yaw = [%.1f %.1f %.1f] deg'], ...
+            t(k), x(k), y(k), z(k), ...
+            rad2deg(pitch(k)), rad2deg(roll(k)), rad2deg(yaw(k)));
+    end
+
+    function onPlay(~, ~)
+        if playing, playing = false; return; end
+        playing = true; btn.String = 'Pause';
+        tStart = sl.Value; if tStart >= t(end), tStart = t(1); end
+        t0 = tic;
+        while playing && isvalid(fig)
+            tn = tStart + toc(t0) * o.PlaybackSpeed;
+            if tn >= t(end), tn = t(end); playing = false; end
+            sl.Value = tn;
+            drawnow;
+        end
+        if isvalid(fig), btn.String = 'Play'; end
+        playing = false;
+    end
 end
 
-%% ---- Resample to uniform time grid at animation fps ----------------
-[t, iu] = unique(t);                            % remove duplicate times
-x = x(iu); y = y(iu); z = z(iu);
-roll = unwrap(roll(iu)); pitch = unwrap(pitch(iu)); yaw = unwrap(yaw(iu));
-
-tu = (t(1):1/(fps*timeScaling):t(end))';
-simdata = [tu, ...
-           interp1(t,x,tu,'linear'), ...
-           interp1(t,y,tu,'linear'), ...
-           interp1(t,z,tu,'linear'), ...
-           interp1(t,roll,tu,'linear'), ...
-           interp1(t,pitch,tu,'linear'), ...
-           interp1(t,yaw,tu,'linear')];
-% Aero.Animation 6DoF array format: [time x y z phi theta psi]
-
-%% ---- Animation object with built-in aircraft -----------------------
-h = Aero.Animation;
-h.FramesPerSecond = fps;
-h.TimeScaling     = timeScaling;
-
-h.createBody('pa24-250_orange.ac','Ac3d');      % built-in Piper PA-24 geometry
-h.Bodies{1}.TimeSeriesSource     = simdata;
-h.Bodies{1}.TimeSeriesSourceType = 'Array6DoF';
-
-%% ---- Camera --------------------------------------------------------
-h.Camera.PrefabPosition = 'Back';               % Back, Front, Left, Right, Top, Bottom
-h.Camera.Offset         = [-60 0 -15];          % camera offset from body (body axes, m)
-
-%% ---- Optional video recording --------------------------------------
-if recordVideo
-    h.VideoRecord      = 'on';
-    h.VideoQuality     = 75;
-    h.VideoCompression = 'Motion JPEG AVI';
-    h.VideoFilename    = videoFile;
+%% ---- Simple built-in aircraft (x nose, y right, z down) ---------------
+function [V, F, C] = simpleAircraft()
+parts = {
+    [ 0.0  0.0  0.0], [8.0  1.0 1.0], [0.6 0.6 0.9];   % fuselage
+    [ 4.3  0.0  0.0], [0.6  0.8 0.8], [0.9 0.2 0.2];   % nose (red)
+    [ 0.5  0.0  0.1], [1.8 10.0 0.15], [0.7 0.7 0.7];  % wing
+    [-3.6  0.0  0.0], [1.0  3.5 0.10], [0.7 0.7 0.7];  % horizontal tail
+    [-3.5  0.0 -0.9], [1.2  0.10 1.6], [0.9 0.6 0.2];  % vertical fin (up = -z)
+};
+V = []; F = []; C = [];
+for i = 1:size(parts, 1)
+    c = parts{i,1}; s = parts{i,2}; col = parts{i,3};
+    [vb, fb] = boxMesh(c, s);
+    F = [F; fb + size(V, 1)];                 %#ok<AGROW>
+    V = [V; vb];                              %#ok<AGROW>
+    C = [C; repmat(col, size(fb, 1), 1)];     %#ok<AGROW>
+end
 end
 
-%% ---- Show and play -------------------------------------------------
-h.show();
-h.play();
-
-if recordVideo
-    h.VideoRecord = 'off';
+function [v, f] = boxMesh(c, s)
+u = [-1 -1 -1; 1 -1 -1; 1 1 -1; -1 1 -1; -1 -1 1; 1 -1 1; 1 1 1; -1 1 1] / 2;
+v = u .* s + c;
+f = [1 2 3 4; 5 6 7 8; 1 2 6 5; 2 3 7 6; 3 4 8 7; 4 1 5 8];
 end
