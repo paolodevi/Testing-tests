@@ -1,191 +1,84 @@
-function aircraftViewer(t, x, y, z, pitch, roll, yaw, varargin)
-%AIRCRAFTVIEWER  3D trajectory + aircraft model driven by a time slider.
-%
-%   aircraftViewer(t, x, y, z, pitch, roll, yaw)
-%   aircraftViewer(..., 'AngleUnit','rad', 'ZUp',true, ...)
-%
-%   Inputs (vectors of the same length N, t strictly increasing):
-%     t              time [s]
-%     x, y, z        position (default: NED frame, z positive DOWN)
-%     pitch,roll,yaw Euler angles (321 sequence: yaw -> pitch -> roll),
-%                    body-to-NED, default in degrees
-%
-%   Options (name-value):
-%     'AngleUnit'       'deg' (default) | 'rad'
-%     'ZUp'             false (default, z = down) | true (z = altitude, up)
-%     'ModelScale'      scale factor for the model (default: auto)
-%     'UseToolboxModel' true (default) uses Aerospace Toolbox 'pa24-250.ac',
-%                       falls back to a simple built-in model if unavailable
-%     'ModelFix'        3x3 matrix to re-orient the toolbox model so that
-%                       x = nose, y = right wing, z = down (default eye(3))
-%     'PlaybackSpeed'   speed of the Play button (default 1 = real time)
+Ripartiamo da zero e usiamo nomi coerenti per tutti i file. Lavoreremo in una sola cartella Linux, usando il compilatore e gli strumenti di Adams 2013.
 
-%% ---- Parse inputs -----------------------------------------------------
-p = inputParser;
-addParameter(p, 'AngleUnit',       'deg');
-addParameter(p, 'ZUp',             false);
-addParameter(p, 'ModelScale',      []);
-addParameter(p, 'UseToolboxModel', true);
-addParameter(p, 'ModelFix',        eye(3));
-addParameter(p, 'PlaybackSpeed',   1);
-parse(p, varargin{:});
-o = p.Results;
+La procedura sarà:
 
-t = t(:); x = x(:); y = y(:); z = z(:);
-pitch = pitch(:); roll = roll(:); yaw = yaw(:);
-N = numel(t);
-assert(N > 1, 'Need at least two samples.');
-assert(all(diff(t) > 0), 't must be strictly increasing.');
+* Creare `gravity.adm`, il modello meccanico.
 
-if strcmpi(o.AngleUnit, 'deg')
-    pitch = deg2rad(pitch); roll = deg2rad(roll); yaw = deg2rad(yaw);
-end
-if o.ZUp, z = -z; end          % internally everything is NED (z down)
+* Creare `gravity.f`, la subroutine Fortran.
 
-%% ---- Rotation matrices (body -> NED), 3-2-1 sequence ------------------
-R = zeros(3, 3, N);
-for k = 1:N
-    cy = cos(yaw(k));   sy = sin(yaw(k));
-    cp = cos(pitch(k)); sp = sin(pitch(k));
-    cr = cos(roll(k));  sr = sin(roll(k));
-    Rz = [cy -sy 0; sy cy 0; 0 0 1];
-    Ry = [cp 0 sp; 0 1 0; -sp 0 cp];
-    Rx = [1 0 0; 0 cr -sr; 0 sr cr];
-    R(:,:,k) = Rz * Ry * Rx;
-end
+* Creare `gravity.acf`, il comando di simulazione.
 
-%% ---- Aircraft geometry ------------------------------------------------
-V = []; F = []; C = [];
-if o.UseToolboxModel
-    try
-        h   = aero.Animation;
-        idx = h.createBody('pa24-250.ac', 'Ac3d');
-        g   = h.Bodies{idx}.Geometry;
-        V = g.Vertices; F = g.Faces; C = g.FaceVertexCData;
-        V = (o.ModelFix * V')';
-        delete(h);
-    catch
-        warning('Toolbox model not available, using simple built-in model.');
-        V = [];
-    end
-end
-useSimple = isempty(V);
-if useSimple
-    [V, F, C] = simpleAircraft();
-end
+* Compilare e collegare la subroutine per ottenere `libgravity.so`.
 
-% Scale model relative to the size of the trajectory
-ext = max([range(x), range(y), range(z), eps]);
-if isempty(o.ModelScale)
-    modelSize = max(max(V) - min(V));
-    scale = 0.08 * ext / modelSize;
-else
-    scale = o.ModelScale;
-end
-V = V * scale;
+* Lanciare Adams Solver e verificare i risultati.
 
-%% ---- Figure and axes --------------------------------------------------
-fig = figure('Name', 'Aircraft trajectory viewer', 'Color', 'w', ...
-             'NumberTitle', 'off');
-ax = axes('Parent', fig, 'Position', [0.08 0.14 0.88 0.82]);
-hold(ax, 'on'); grid(ax, 'on'); box(ax, 'on');
-plot3(ax, x, y, z, 'b-', 'LineWidth', 1.2);                 % full trajectory
-plot3(ax, x(1), y(1), z(1), 'go', 'MarkerFaceColor', 'g');  % start
-plot3(ax, x(end), y(end), z(end), 'rs', 'MarkerFaceColor', 'r'); % end
-axis(ax, 'equal');
-set(ax, 'ZDir', 'reverse');                % NED: altitude shown upwards
-xlabel(ax, 'x (North) [m]'); ylabel(ax, 'y (East) [m]'); zlabel(ax, 'z (Down) [m]');
-view(ax, 3);
-pad = 0.1 * ext;
-xlim(ax, [min(x)-pad, max(x)+pad]);
-ylim(ax, [min(y)-pad, max(y)+pad]);
-zlim(ax, [min(z)-pad, max(z)+pad]);
+Per ridurre i problemi di compatibilità, useremo il comando di compilazione delle user subroutines fornito da Adams, invece di inventare a priori un comando `gfortran` con opzioni di linking potenzialmente incompatibili. Adams supporta infatti la compilazione e il caricamento di librerie utente `.so` su Linux.
 
-% Aircraft patch inside an hgtransform (moved/rotated by a 4x4 matrix)
-tf = hgtransform('Parent', ax);
-if ~isempty(C) && size(C, 1) == size(V, 1)
-    fc = 'interp';
-else
-    fc = 'flat';
-end
-if useSimple, ec = 'k'; else, ec = 'none'; end
-patch('Parent', tf, 'Vertices', V, 'Faces', F, 'FaceVertexCData', C, ...
-      'FaceColor', fc, 'EdgeColor', ec);
-camlight(ax, 'headlight'); lighting(ax, 'gouraud'); material(ax, 'dull');
+### 1\. Crea la cartella del progetto
 
-% Info text
-info = annotation(fig, 'textbox', [0.08 0.90 0.4 0.07], 'EdgeColor', 'none', ...
-                  'FontName', 'Consolas', 'FontSize', 9, 'Interpreter', 'none');
+Nel terminale Linux:
 
-%% ---- Controls ---------------------------------------------------------
-sl = uicontrol(fig, 'Style', 'slider', 'Units', 'normalized', ...
-               'Position', [0.15 0.03 0.75 0.04], ...
-               'Min', t(1), 'Max', t(end), 'Value', t(1), ...
-               'SliderStep', [1/(N-1), min(1, 10/(N-1))]);
-btn = uicontrol(fig, 'Style', 'pushbutton', 'Units', 'normalized', ...
-                'Position', [0.05 0.03 0.08 0.04], 'String', 'Play', ...
-                'Callback', @onPlay);
-addlistener(sl, 'Value', 'PostSet', @(~,~) onSlide());   % continuous update
-playing = false;
+```bash
+mkdir -p ~/adams_gravity
+cd ~/adams_gravity
+```
 
-update(1);
+Tutti i file del progetto saranno in questa cartella.
 
-%% ---- Nested functions -------------------------------------------------
-    function onSlide()
-        k = round(interp1(t, 1:N, sl.Value, 'nearest', 'extrap'));
-        k = max(1, min(N, k));
-        update(k);
-    end
+### 6\. Eseguire Adams Solver
 
-    function update(k)
-        M = eye(4);
-        M(1:3, 1:3) = R(:, :, k);
-        M(1:3, 4)   = [x(k); y(k); z(k)];
-        tf.Matrix = M;
-        info.String = sprintf(['t = %8.3f s\n' ...
-            'pos = [%.1f %.1f %.1f]\n' ...
-            'pitch/roll/yaw = [%.1f %.1f %.1f] deg'], ...
-            t(k), x(k), y(k), z(k), ...
-            rad2deg(pitch(k)), rad2deg(roll(k)), rad2deg(yaw(k)));
-    end
+Dopo aver ottenuto `libgravity.so`, torna nella cartella del progetto:
 
-    function onPlay(~, ~)
-        if playing, playing = false; return; end
-        playing = true; btn.String = 'Pause';
-        tStart = sl.Value; if tStart >= t(end), tStart = t(1); end
-        t0 = tic;
-        while playing && isvalid(fig)
-            tn = tStart + toc(t0) * o.PlaybackSpeed;
-            if tn >= t(end), tn = t(end); playing = false; end
-            sl.Value = tn;
-            drawnow;
-        end
-        if isvalid(fig), btn.String = 'Play'; end
-        playing = false;
-    end
-end
+```bash
+cd ~/adams_gravity
+```
 
-%% ---- Simple built-in aircraft (x nose, y right, z down) ---------------
-function [V, F, C] = simpleAircraft()
-parts = {
-    [ 0.0  0.0  0.0], [8.0  1.0 1.0], [0.6 0.6 0.9];   % fuselage
-    [ 4.3  0.0  0.0], [0.6  0.8 0.8], [0.9 0.2 0.2];   % nose (red)
-    [ 0.5  0.0  0.1], [1.8 10.0 0.15], [0.7 0.7 0.7];  % wing
-    [-3.6  0.0  0.0], [1.0  3.5 0.10], [0.7 0.7 0.7];  % horizontal tail
-    [-3.5  0.0 -0.9], [1.2  0.10 1.6], [0.9 0.6 0.2];  % vertical fin (up = -z)
-};
-V = []; F = []; C = [];
-for i = 1:size(parts, 1)
-    c = parts{i,1}; s = parts{i,2}; col = parts{i,3};
-    [vb, fb] = boxMesh(c, s);
-    F = [F; fb + size(V, 1)];                 %#ok<AGROW>
-    V = [V; vb];                              %#ok<AGROW>
-    C = [C; repmat(col, size(fb, 1), 1)];     %#ok<AGROW>
-end
-end
+Esegui il solver in modalità batch:
 
-function [v, f] = boxMesh(c, s)
-u = [-1 -1 -1; 1 -1 -1; 1 1 -1; -1 1 -1; -1 -1 1; 1 -1 1; 1 1 1; -1 1 1] / 2;
-v = u .* s + c;
-f = [1 2 3 4; 5 6 7 8; 1 2 6 5; 2 3 7 6; 3 4 8 7; 4 1 5 8];
-end
+```bash
+adams2013 -c ru-s gravity.acf exit
+```
+
+Se non esiste l'alias `adams2013`, usa il percorso completo del launcher, per esempio:
+
+```bash
+/percorso/Adams2013/mdi -c ru-s gravity.acf exit
+```
+
+Il comando `ru-s` avvia il solver; `exit` chiude il processo di comando al termine dell'esecuzione. La forma del comando può dipendere dagli alias installati.
+
+Controlla quindi i risultati:
+
+```bash
+ls -lh gravity_run.*
+```
+
+Leggi in particolare il file `gravity_run.msg` per verificare se il solver segnala errori nel dataset o nel caricamento della libreria.
+
+### 7\. Come capire se il test funziona
+
+Per una massa di 1000 kg soggetta alla forza peso, partendo da ferma e senza vincoli, ti aspetti:
+
+* accelerazione verticale: ;
+
+* spostamento verticale dopo 2 secondi: circa ;
+
+* velocità verticale finale: circa .
+
+Questi valori assumono asse Z positivo verso l'alto e condizioni iniziali con velocità nulla.
+
+### Prima di lanciare tutto: due controlli importanti
+
+Il collegamento dinamico e la compilazione dipendono dalla configurazione effettiva di Adams 2013. Per evitare che tu perda tempo su errori di ambiente, esegui questi comandi e conserva l'output:
+
+```bash
+which adams2013
+which gfortran
+```
+
+```bash
+find /percorso/Adams2013/solver \
+  -iname '*gfosub*' -o -iname '*usersub*'
+```
+
+Sostituisci il percorso con quello reale della tua installazione. Con questi risultati potremo verificare la disponibilità del compilatore, individuare il template Fortran specifico della release e, se necessario, adattare la procedura di linking. Non darei per garantito che il template minimale sopra venga compilato senza modifiche nella tua installazione: il primo test deve confermare sia la firma di `GFOSUB` sia la sintassi del dataset.
