@@ -1,285 +1,81 @@
-function S = h5_to_struct(filename, opts)
-%H5_TO_STRUCT  Import an HDF5 file into a nested MATLAB struct, splitting
-%   numeric matrices into named variables using the dataset's attributes.
-%
-%   S = h5_to_struct('file.h5')
-%   S = h5_to_struct('file.h5', NameAttribute="VariableNames")
-%   S = h5_to_struct('file.h5', NameSource="keys")
-%   S = h5_to_struct('file.h5', Split=false, Attributes=false)
-%
-%   Example: dataset /run1/data (1000 x 3) with a text attribute
-%   ["time","alt","mass"] becomes
-%       S.run1.data.time   (1000 x 1)
-%       S.run1.data.alt    (1000 x 1)
-%       S.run1.data.mass   (1000 x 1)
-%
-%   How names are found (per 2-D numeric dataset):
-%     NameSource = "values" (default)
-%        Looks for a text-valued attribute (string array, cellstr, char
-%        matrix, or one delimited string like "time,alt,mass") whose number
-%        of entries equals the number of columns (or rows) of the data.
-%        Attributes whose name contains name/variable/column/label/header/
-%        channel are tried first. Force one with NameAttribute="...".
-%     NameSource = "keys"
-%        Uses the attribute NAMES themselves, in file order, as variable
-%        names (when the number of attributes equals columns/rows).
-%
-%   Datasets without matching names are left as plain matrices.
-%   Group/file attributes -> S.attributes
-%   Dataset attributes    -> S.dataset_attributes.<datasetName>
-%
-%   NOTE: h5read reverses dimensions relative to HDF5 (C / h5py) order, so
-%   Python data of shape (N,M) arrives as (M,N). This script accepts a name
-%   count matching either dimension and splits along the matching one.
-%
-%   Requires R2019b or newer.
+%% ---- User settings -------------------------------------------------
+% Map the columns of your Sim array here
+colT     = 1;    % time [s]  (set [] if you have no time column)
+colX     = 2;    % x (north)
+colY     = 3;    % y (east)
+colZ     = 4;    % z
+colRoll  = 5;
+colPitch = 6;
+colYaw   = 7;
 
-    arguments
-        filename (1,1) string
-        opts.Attributes (1,1) logical = true
-        opts.Split (1,1) logical = true
-        opts.NameAttribute (1,1) string = ""
-        opts.NameSource (1,1) string {mustBeMember(opts.NameSource, ["values","keys"])} = "values"
-    end
+anglesInDegrees = true;    % true if roll/pitch/yaw are in deg
+zIsAltitude     = false;   % true if z is positive UP (it will be flipped to NED)
+fps             = 30;      % animation frame rate
+timeScaling     = 1;       % 1 = real time, 5 = 5x faster, etc.
+recordVideo     = false;
+videoFile       = 'flight.avi';
 
-    filename = char(filename);
-    if ~isfile(filename)
-        error('h5_to_struct:fileNotFound', 'File not found: %s', filename);
-    end
+%% ---- Extract data --------------------------------------------------
+if isempty(colT)
+    dt = 0.01;                                  % set your sample time
+    t = (0:size(Sim,1)-1)' * dt;
+else
+    t = Sim(:,colT);
+end
+x     = Sim(:,colX);
+y     = Sim(:,colY);
+z     = Sim(:,colZ);
+roll  = Sim(:,colRoll);
+pitch = Sim(:,colPitch);
+yaw   = Sim(:,colYaw);
 
-    info = h5info(filename);
-    S = read_group(filename, info, opts);
+if anglesInDegrees
+    roll = deg2rad(roll);  pitch = deg2rad(pitch);  yaw = deg2rad(yaw);
+end
+if zIsAltitude
+    z = -z;                                     % NED: z positive down
 end
 
+%% ---- Resample to uniform time grid at animation fps ----------------
+[t, iu] = unique(t);                            % remove duplicate times
+x = x(iu); y = y(iu); z = z(iu);
+roll = unwrap(roll(iu)); pitch = unwrap(pitch(iu)); yaw = unwrap(yaw(iu));
 
-function S = read_group(filename, info, o)
+tu = (t(1):1/(fps*timeScaling):t(end))';
+simdata = [tu, ...
+           interp1(t,x,tu,'linear'), ...
+           interp1(t,y,tu,'linear'), ...
+           interp1(t,z,tu,'linear'), ...
+           interp1(t,roll,tu,'linear'), ...
+           interp1(t,pitch,tu,'linear'), ...
+           interp1(t,yaw,tu,'linear')];
+% Aero.Animation 6DoF array format: [time x y z phi theta psi]
 
-    S = struct();
+%% ---- Animation object with built-in aircraft -----------------------
+h = Aero.Animation;
+h.FramesPerSecond = fps;
+h.TimeScaling     = timeScaling;
 
-    % Reserve names used for attributes so datasets/groups can't clobber them
-    used = {'attributes', 'dataset_attributes'};
+h.createBody('pa24-250_orange.ac','Ac3d');      % built-in Piper PA-24 geometry
+h.Bodies{1}.TimeSeriesSource     = simdata;
+h.Bodies{1}.TimeSeriesSourceType = 'Array6DoF';
 
-    % ---- Group attributes ------------------------------------------------
-    if o.Attributes && ~isempty(info.Attributes)
-        S.attributes = attrs_to_struct(info.Attributes);
-    end
+%% ---- Camera --------------------------------------------------------
+h.Camera.PrefabPosition = 'Back';               % Back, Front, Left, Right, Top, Bottom
+h.Camera.Offset         = [-60 0 -15];          % camera offset from body (body axes, m)
 
-    % ---- Datasets --------------------------------------------------------
-    dsAttrs = struct();
-    for k = 1:numel(info.Datasets)
-        ds = info.Datasets(k);
-        [fname, used] = unique_field(ds.Name, used);
-        path = join_path(info.Name, ds.Name);
-
-        data = read_dataset(filename, path, ds);
-
-        if o.Split
-            data = split_by_attribute_names(data, ds.Attributes, o, path);
-        end
-        S.(fname) = data;
-
-        if o.Attributes && ~isempty(ds.Attributes)
-            dsAttrs.(fname) = attrs_to_struct(ds.Attributes);
-        end
-    end
-    if o.Attributes && ~isempty(fieldnames(dsAttrs))
-        S.dataset_attributes = dsAttrs;
-    end
-
-    % ---- Subgroups (recursive) ------------------------------------------
-    for k = 1:numel(info.Groups)
-        grp = info.Groups(k);
-
-        % Last path component only, e.g. '/a/b.c' -> 'b.c'
-        parts = strsplit(grp.Name, '/');
-        parts = parts(~cellfun(@isempty, parts));
-        if isempty(parts)
-            rawName = 'root';
-        else
-            rawName = parts{end};
-        end
-
-        [fname, used] = unique_field(rawName, used);
-        S.(fname) = read_group(filename, grp, o);
-    end
-
-    % ---- Soft/external links are not followed ----------------------------
-    if isfield(info, 'Links') && ~isempty(info.Links)
-        for k = 1:numel(info.Links)
-            warning('h5_to_struct:linkSkipped', ...
-                'Skipped link "%s" in group "%s" (links are not followed).', ...
-                info.Links(k).Name, info.Name);
-        end
-    end
+%% ---- Optional video recording --------------------------------------
+if recordVideo
+    h.VideoRecord      = 'on';
+    h.VideoQuality     = 75;
+    h.VideoCompression = 'Motion JPEG AVI';
+    h.VideoFilename    = videoFile;
 end
 
+%% ---- Show and play -------------------------------------------------
+h.show();
+h.play();
 
-function data = read_dataset(filename, path, ds)
-    try
-        if isfield(ds, 'Dataspace') && ~isempty(ds.Dataspace)
-            dsType = ds.Dataspace.Type;
-            if strcmp(dsType, 'null') || ...
-               (strcmp(dsType, 'simple') && any(ds.Dataspace.Size == 0))
-                data = [];
-                return
-            end
-        end
-        data = h5read(filename, path);
-    catch ME
-        warning('h5_to_struct:readFailed', ...
-            'Could not read dataset "%s": %s', path, ME.message);
-        data = [];
-    end
-end
-
-
-% =========================================================================
-%  Splitting a matrix into named variables
-% =========================================================================
-function out = split_by_attribute_names(data, attrs, o, path)
-
-    out = data;
-
-    if isempty(attrs) || isempty(data) || ~ismatrix(data) || ...
-       ~(isnumeric(data) || islogical(data))
-        return
-    end
-
-    names = find_names(attrs, size(data), o, path);
-    if isempty(names)
-        return
-    end
-
-    n = numel(names);
-    if size(data, 2) == n
-        splitDim = 2;
-        if size(data, 1) == n && n > 1
-            warning('h5_to_struct:ambiguousDim', ...
-                ['Dataset "%s" is square (%d x %d); splitting by columns. ' ...
-                 'Transpose the result if the names refer to rows.'], ...
-                path, n, n);
-        end
-    else
-        splitDim = 1;
-    end
-
-    out = struct();
-    used = {};
-    for i = 1:n
-        [fname, used] = unique_field(names{i}, used);
-        if splitDim == 2
-            out.(fname) = data(:, i);
-        else
-            out.(fname) = data(i, :).';
-        end
-    end
-end
-
-
-function names = find_names(attrs, sz, o, path)
-
-    names = {};
-    keys = string({attrs.Name});
-
-    % ---- Use attribute NAMES as variable names ---------------------------
-    if o.NameSource == "keys"
-        if any(numel(keys) == sz)
-            names = cellstr(keys(:));
-        end
-        return
-    end
-
-    % ---- Use a text-valued attribute as the list of names ----------------
-    explicit = strlength(o.NameAttribute) > 0;
-    if explicit
-        idx = find(strcmpi(keys, o.NameAttribute));
-    else
-        hint = ~cellfun(@isempty, regexpi(cellstr(keys), ...
-            'name|variable|column|label|header|channel'));
-        idx = [find(hint(:)).', find(~hint(:)).'];
-    end
-
-    for i = idx
-        candidate = to_name_list(attrs(i).Value);
-        if ~isempty(candidate) && any(numel(candidate) == sz)
-            names = candidate;
-            return
-        end
-    end
-
-    if explicit
-        warning('h5_to_struct:nameAttrMismatch', ...
-            ['Dataset "%s": attribute "%s" not found, not text, or its ' ...
-             'length does not match the data size. Leaving as matrix.'], ...
-            path, o.NameAttribute);
-    end
-end
-
-
-function names = to_name_list(val)
-% Convert an attribute value into a column cellstr of names ({} if the value
-% is not text).
-    names = {};
-
-    if iscell(val)
-        if ~isempty(val) && all(cellfun(@(c) ischar(c) || isstring(c), val(:)))
-            names = cellstr(string(val(:)));
-        end
-    elseif isstring(val)
-        names = cellstr(val(:));
-    elseif ischar(val)
-        if size(val, 1) > 1                 % char matrix: one name per row
-            names = cellstr(val);
-        else                                % single (possibly delimited) string
-            names = split_text(val);
-        end
-    end
-
-    if ~isempty(names)
-        names = strtrim(erase(names(:), char(0)));
-        names = names(~cellfun(@isempty, names));
-    end
-end
-
-
-function parts = split_text(s)
-    s = char(erase(string(s), char(0)));
-    parts = strsplit(s, {',', ';', '|', newline, sprintf('\t')});
-    parts = strtrim(parts(:));
-    parts = parts(~cellfun(@isempty, parts));
-    % No delimiter found: fall back to whitespace-separated names
-    if numel(parts) == 1 && any(isspace(parts{1}))
-        parts = strsplit(strtrim(parts{1}));
-        parts = parts(:);
-    end
-end
-
-
-% =========================================================================
-%  Helpers
-% =========================================================================
-function A = attrs_to_struct(attrs)
-    A = struct();
-    used = {};
-    for k = 1:numel(attrs)
-        [fname, used] = unique_field(attrs(k).Name, used);
-        A.(fname) = attrs(k).Value;
-    end
-end
-
-
-function [fname, used] = unique_field(rawName, used)
-    fname = matlab.lang.makeValidName(rawName);
-    fname = matlab.lang.makeUniqueStrings(fname, used, namelengthmax);
-    used{end+1} = fname;
-end
-
-
-function p = join_path(parent, child)
-    % HDF5 paths always use '/', never fullfile (which uses '\' on Windows)
-    if endsWith(parent, '/')
-        p = [parent child];
-    else
-        p = [parent '/' child];
-    end
+if recordVideo
+    h.VideoRecord = 'off';
 end
