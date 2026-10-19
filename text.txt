@@ -1,84 +1,80 @@
-Ripartiamo da zero e usiamo nomi coerenti per tutti i file. Lavoreremo in una sola cartella Linux, usando il compilatore e gli strumenti di Adams 2013.
+adams.adm
 
-La procedura sarà:
+ADAMS/
+TITLE = Single CG body, gravity from user subroutine
+UNITS/ FORCE=NEWTON, MASS=KILOGRAM, LENGTH=METER, TIME=SECOND
+!
+! ---------------- Ground ----------------
+PART/1, GROUND
+MARKER/11, PART=1, QP=0,0,0
+!
+! ---------------- Free body (just a CG) ----------------
+! Starts 10 m above ground (global Y). No joints -> 6 free DOF.
+PART/2, QG=0,10,0, MASS=10.0, CM=21, IP=1,1,1
+MARKER/21, PART=2, QP=0,0,0
+!
+! ---------------- Floating marker for the reaction ----------------
+! VFORCE needs a "reaction" part; we use ground (nothing reacts there).
+MARKER/12, PART=1, FLOATING
+!
+! ---------------- Gravity from user subroutine VFOSUB ----------------
+! USER(mass, g): passed to Fortran as PAR(1), PAR(2).
+! Force components are expressed in the ground marker 11 (global axes).
+VFORCE/1, I=21, JFLOAT=12, RM=11, FUNCTION=USER(10.0, 9.81)
+!
+! ---------------- Output ----------------
+REQUEST/1, TITLE=CG_height_and_velocity, F2=DY(21,11,11), F3=VY(21,11,11,11)
+!
+END
 
-* Creare `gravity.adm`, il modello meccanico.
 
-* Creare `gravity.f`, la subroutine Fortran.
+adams.acf
 
-* Creare `gravity.acf`, il comando di simulazione.
+model
+OUTPUT/REQSAVE, GRSAVE
+SIMULATE/DYNAMIC, END=1.0, STEPS=100
+STOP
 
-* Compilare e collegare la subroutine per ottenere `libgravity.so`.
 
-* Lanciare Adams Solver e verificare i risultati.
+usersub.f
 
-Per ridurre i problemi di compatibilità, useremo il comando di compilazione delle user subroutines fornito da Adams, invece di inventare a priori un comando `gfortran` con opzioni di linking potenzialmente incompatibili. Adams supporta infatti la compilazione e il caricamento di librerie utente `.so` su Linux.
+C     Adams user subroutine: gravity force on the CG body.
+C     Called by the VFORCE/1 statement via FUNCTION=USER(mass, g)
+C        PAR(1) = mass [kg]
+C        PAR(2) = g    [m/s^2]
+C     RESULT(1:3) = force in the RM marker frame (global axes here)
+C     RESULT(4:6) = torque (zero)
+      SUBROUTINE VFOSUB(ID, TIME, PAR, NPAR, DFLAG, IFLAG, RESULT)
+      IMPLICIT NONE
+      INTEGER ID, NPAR
+      DOUBLE PRECISION TIME, PAR(*), RESULT(6)
+      LOGICAL DFLAG, IFLAG
+C
+      DOUBLE PRECISION MASS, G
+C
+      MASS = PAR(1)
+      G    = PAR(2)
+C
+C     Gravity points along -Y
+      RESULT(1) = 0.0D0
+      RESULT(2) = -MASS*G
+      RESULT(3) = 0.0D0
+      RESULT(4) = 0.0D0
+      RESULT(5) = 0.0D0
+      RESULT(6) = 0.0D0
+C
+      RETURN
+      END
 
-### 1\. Crea la cartella del progetto
 
-Nel terminale Linux:
+usersub.f
 
-```bash
-mkdir -p ~/adams_gravity
-cd ~/adams_gravity
-```
+#!/bin/bash
+# Adams 2013 launcher (change if yours is called differently, e.g. "mdi")
+ADAMS=${ADAMS:-adams2013}
 
-Tutti i file del progetto saranno in questa cartella.
+# 1) compile the Fortran user subroutine into a shared library (usersub.so)
+$ADAMS -c cr-u n usersub.f exit || exit 1
 
-### 6\. Eseguire Adams Solver
-
-Dopo aver ottenuto `libgravity.so`, torna nella cartella del progetto:
-
-```bash
-cd ~/adams_gravity
-```
-
-Esegui il solver in modalità batch:
-
-```bash
-adams2013 -c ru-s gravity.acf exit
-```
-
-Se non esiste l'alias `adams2013`, usa il percorso completo del launcher, per esempio:
-
-```bash
-/percorso/Adams2013/mdi -c ru-s gravity.acf exit
-```
-
-Il comando `ru-s` avvia il solver; `exit` chiude il processo di comando al termine dell'esecuzione. La forma del comando può dipendere dagli alias installati.
-
-Controlla quindi i risultati:
-
-```bash
-ls -lh gravity_run.*
-```
-
-Leggi in particolare il file `gravity_run.msg` per verificare se il solver segnala errori nel dataset o nel caricamento della libreria.
-
-### 7\. Come capire se il test funziona
-
-Per una massa di 1000 kg soggetta alla forza peso, partendo da ferma e senza vincoli, ti aspetti:
-
-* accelerazione verticale: ;
-
-* spostamento verticale dopo 2 secondi: circa ;
-
-* velocità verticale finale: circa .
-
-Questi valori assumono asse Z positivo verso l'alto e condizioni iniziali con velocità nulla.
-
-### Prima di lanciare tutto: due controlli importanti
-
-Il collegamento dinamico e la compilazione dipendono dalla configurazione effettiva di Adams 2013. Per evitare che tu perda tempo su errori di ambiente, esegui questi comandi e conserva l'output:
-
-```bash
-which adams2013
-which gfortran
-```
-
-```bash
-find /percorso/Adams2013/solver \
-  -iname '*gfosub*' -o -iname '*usersub*'
-```
-
-Sostituisci il percorso con quello reale della tua installazione. Con questi risultati potremo verificare la disponibilità del compilatore, individuare il template Fortran specifico della release e, se necessario, adattare la procedura di linking. Non darei per garantito che il template minimale sopra venga compilato senza modifiche nella tua installazione: il primo test deve confermare sia la firma di `GFOSUB` sia la sintassi del dataset.
+# 2) run the simulation using that library
+$ADAMS -c ru-user i usersub.so model.acf exit
