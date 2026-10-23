@@ -1,80 +1,68 @@
-adams.adm
+function plotErrMatrix(data, threshold)
+%PLOTERRMATRIX Matrix plot of data(i).(field).err
+%   rows    = data(i)
+%   columns = fields of data
+%   cells with err > threshold (default 2) are red, others use parula.
 
-ADAMS/
-TITLE = Single CG body, gravity from user subroutine
-UNITS/ FORCE=NEWTON, MASS=KILOGRAM, LENGTH=METER, TIME=SECOND
-!
-! ---------------- Ground ----------------
-PART/1, GROUND
-MARKER/11, PART=1, QP=0,0,0
-!
-! ---------------- Free body (just a CG) ----------------
-! Starts 10 m above ground (global Y). No joints -> 6 free DOF.
-PART/2, QG=0,10,0, MASS=10.0, CM=21, IP=1,1,1
-MARKER/21, PART=2, QP=0,0,0
-!
-! ---------------- Floating marker for the reaction ----------------
-! VFORCE needs a "reaction" part; we use ground (nothing reacts there).
-MARKER/12, PART=1, FLOATING
-!
-! ---------------- Gravity from user subroutine VFOSUB ----------------
-! USER(mass, g): passed to Fortran as PAR(1), PAR(2).
-! Force components are expressed in the ground marker 11 (global axes).
-VFORCE/1, I=21, JFLOAT=12, RM=11, FUNCTION=USER(10.0, 9.81)
-!
-! ---------------- Output ----------------
-REQUEST/1, TITLE=CG_height_and_velocity, F2=DY(21,11,11), F3=VY(21,11,11,11)
-!
-END
+if nargin < 2, threshold = 2; end
 
+fn = fieldnames(data(1));
+n  = numel(data);
+m  = numel(fn);
 
-adams.acf
+% Collect err values (NaN where missing)
+E = nan(n, m);
+for i = 1:n
+    for j = 1:m
+        if isfield(data(i), fn{j}) && isstruct(data(i).(fn{j})) ...
+                && isfield(data(i).(fn{j}), 'err') ...
+                && isscalar(data(i).(fn{j}).err)
+            E(i, j) = data(i).(fn{j}).err;
+        end
+    end
+end
 
-model
-OUTPUT/REQSAVE, GRSAVE
-SIMULATE/DYNAMIC, END=1.0, STEPS=100
-STOP
+% Color range: parula spans [min, threshold]
+lo = min(E(:), [], 'omitnan');
+hi = threshold;
+if isempty(lo) || isnan(lo) || lo >= hi, lo = hi - 1; end
 
+figure;
+imagesc(E);
+colormap(parula);
+caxis([lo hi]);
+cb = colorbar;
+cb.Label.String = 'err';
+hold on;
 
-usersub.f
+% Red squares + text
+for i = 1:n
+    for j = 1:m
+        v = E(i, j);
+        if isnan(v), continue; end
+        if v > threshold
+            rectangle('Position', [j-0.5, i-0.5, 1, 1], ...
+                      'FaceColor', 'r', 'EdgeColor', 'none');
+            tc = 'w';
+        elseif (v - lo) / (hi - lo) < 0.5
+            tc = 'w';   % dark part of parula
+        else
+            tc = 'k';   % bright part of parula
+        end
+        text(j, i, sprintf('%.3g', v), 'HorizontalAlignment', 'center', ...
+             'VerticalAlignment', 'middle', 'Color', tc, 'FontWeight', 'bold');
+    end
+end
 
-C     Adams user subroutine: gravity force on the CG body.
-C     Called by the VFORCE/1 statement via FUNCTION=USER(mass, g)
-C        PAR(1) = mass [kg]
-C        PAR(2) = g    [m/s^2]
-C     RESULT(1:3) = force in the RM marker frame (global axes here)
-C     RESULT(4:6) = torque (zero)
-      SUBROUTINE VFOSUB(ID, TIME, PAR, NPAR, DFLAG, IFLAG, RESULT)
-      IMPLICIT NONE
-      INTEGER ID, NPAR
-      DOUBLE PRECISION TIME, PAR(*), RESULT(6)
-      LOGICAL DFLAG, IFLAG
-C
-      DOUBLE PRECISION MASS, G
-C
-      MASS = PAR(1)
-      G    = PAR(2)
-C
-C     Gravity points along -Y
-      RESULT(1) = 0.0D0
-      RESULT(2) = -MASS*G
-      RESULT(3) = 0.0D0
-      RESULT(4) = 0.0D0
-      RESULT(5) = 0.0D0
-      RESULT(6) = 0.0D0
-C
-      RETURN
-      END
+% Grid lines between cells
+for k = 0.5:1:m+0.5, plot([k k], [0.5 n+0.5], 'k-', 'LineWidth', 0.5); end
+for k = 0.5:1:n+0.5, plot([0.5 m+0.5], [k k], 'k-', 'LineWidth', 0.5); end
 
-
-usersub.f
-
-#!/bin/bash
-# Adams 2013 launcher (change if yours is called differently, e.g. "mdi")
-ADAMS=${ADAMS:-adams2013}
-
-# 1) compile the Fortran user subroutine into a shared library (usersub.so)
-$ADAMS -c cr-u n usersub.f exit || exit 1
-
-# 2) run the simulation using that library
-$ADAMS -c ru-user i usersub.so model.acf exit
+% Axes
+set(gca, 'XTick', 1:m, 'XTickLabel', fn, 'YTick', 1:n, ...
+         'TickLabelInterpreter', 'none', 'XAxisLocation', 'top');
+xtickangle(45);
+ylabel('data index i');
+axis tight; axis ij;
+title(sprintf('err (red = err > %g)', threshold));
+end
