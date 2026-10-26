@@ -1,68 +1,96 @@
-function plotErrMatrix(data, threshold)
-%PLOTERRMATRIX Matrix plot of data(i).(field).err
-%   rows    = data(i)
-%   columns = fields of data
-%   cells with err > threshold (default 2) are red, others use parula.
+#!/usr/bin/env python3
+"""Generates aircraft.adm (MSC Adams 2013 Solver dataset).
 
-if nargin < 2, threshold = 2; end
+Frames
+  - Adams global/ground frame IS the NED frame: x = North, y = East, z = Down
+    (so gravity is +z). Marker 101 on ground marks it explicitly.
+  - Marker 201 (at the CG) is the body frame: x = nose, y = right wing, z = down.
 
-fn = fieldnames(data(1));
-n  = numel(data);
-m  = numel(fn);
+Edit the parameters below, run:  python3 gen_aircraft.py
+"""
+import math
 
-% Collect err values (NaN where missing)
-E = nan(n, m);
-for i = 1:n
-    for j = 1:m
-        if isfield(data(i), fn{j}) && isstruct(data(i).(fn{j})) ...
-                && isfield(data(i).(fn{j}), 'err') ...
-                && isscalar(data(i).(fn{j}).err)
-            E(i, j) = data(i).(fn{j}).err;
-        end
-    end
-end
+# ---------------- PARAMETERS (SI units) ----------------
+mass = 5000.0                       # kg
+Ixx, Iyy, Izz = 8000.0, 20000.0, 25000.0   # kg m^2, about body axes at the CG
+Ixy, Ixz, Iyz = 0.0, 500.0, 0.0     # products of inertia, Ixz = integral(x*z dm)
 
-% Color range: parula spans [min, threshold]
-lo = min(E(:), [], 'omitnan');
-hi = threshold;
-if isempty(lo) || isnan(lo) || lo >= hi, lo = hi - 1; end
+pos_ned = (0.0, 0.0, -1000.0)       # initial CG position in NED [m] (z = -altitude)
+euler_deg = (0.0, 5.0, 0.0)         # initial yaw(psi), pitch(theta), roll(phi) [deg]
+vel_body = (60.0, 0.0, 0.0)         # initial u, v, w in BODY axes [m/s]
+rates_body = (0.0, 0.0, 0.0)        # initial p, q, r in BODY axes [rad/s]
 
-figure;
-imagesc(E);
-colormap(parula);
-caxis([lo hi]);
-cb = colorbar;
-cb.Label.String = 'err';
-hold on;
+nose_x, tail_x, semi_span = 6.0, -8.0, 7.0   # marker offsets from CG [m]
+g = 9.80665
+# --------------------------------------------------------
 
-% Red squares + text
-for i = 1:n
-    for j = 1:m
-        v = E(i, j);
-        if isnan(v), continue; end
-        if v > threshold
-            rectangle('Position', [j-0.5, i-0.5, 1, 1], ...
-                      'FaceColor', 'r', 'EdgeColor', 'none');
-            tc = 'w';
-        elseif (v - lo) / (hi - lo) < 0.5
-            tc = 'w';   % dark part of parula
-        else
-            tc = 'k';   % bright part of parula
-        end
-        text(j, i, sprintf('%.3g', v), 'HorizontalAlignment', 'center', ...
-             'VerticalAlignment', 'middle', 'Color', tc, 'FontWeight', 'bold');
-    end
-end
 
-% Grid lines between cells
-for k = 0.5:1:m+0.5, plot([k k], [0.5 n+0.5], 'k-', 'LineWidth', 0.5); end
-for k = 0.5:1:n+0.5, plot([0.5 m+0.5], [k k], 'k-', 'LineWidth', 0.5); end
+def dcm_body_to_ned(psi, theta, phi):
+    """R = Rz(psi) Ry(theta) Rx(phi)  (body -> NED)."""
+    cp, sp = math.cos(psi), math.sin(psi)
+    ct, st = math.cos(theta), math.sin(theta)
+    cf, sf = math.cos(phi), math.sin(phi)
+    return [
+        [cp * ct, cp * st * sf - sp * cf, cp * st * cf + sp * sf],
+        [sp * ct, sp * st * sf + cp * cf, sp * st * cf - cp * sf],
+        [-st,     ct * sf,                ct * cf],
+    ]
 
-% Axes
-set(gca, 'XTick', 1:m, 'XTickLabel', fn, 'YTick', 1:n, ...
-         'TickLabelInterpreter', 'none', 'XAxisLocation', 'top');
-xtickangle(45);
-ylabel('data index i');
-axis tight; axis ij;
-title(sprintf('err (red = err > %g)', threshold));
-end
+
+def euler313(R):
+    """Adams REULER: body-fixed rotations about z, x', z'' (a, b, c) in rad."""
+    b = math.acos(max(-1.0, min(1.0, R[2][2])))
+    if abs(math.sin(b)) < 1e-9:           # singular: pure rotation about z
+        return math.atan2(R[1][0], R[0][0]), b, 0.0
+    a = math.atan2(R[0][2], -R[1][2])
+    c = math.atan2(R[2][0], R[2][1])
+    return a, b, c
+
+
+def mv(R, v):
+    return [sum(R[i][j] * v[j] for j in range(3)) for i in range(3)]
+
+
+psi, theta, phi = (math.radians(x) for x in euler_deg)
+R = dcm_body_to_ned(psi, theta, phi)
+ea, eb, ec = euler313(R)
+v_ned = mv(R, vel_body)
+w_ned = mv(R, rates_body)
+
+adm = f"""aircraft
+!
+UNITS/ FORCE=NEWTON, MASS=KILOGRAM, LENGTH=METER, TIME=SECOND
+!
+! Global frame = NED (x North, y East, z Down) -> gravity along +z
+ACCGRAV/ IGRAV = 0, 0, {g}
+!
+PART/1, GROUND
+MARKER/101, PART=1, QP=0, 0, 0, REULER=0, 0, 0
+!
+! ---- Aircraft rigid body; part frame = body frame (x fwd, y right, z down)
+PART/2, MASS={mass}
+, CM=201
+, IP={Ixx}, {Iyy}, {Izz}, {Ixy}, {Ixz}, {Iyz}
+, QG={pos_ned[0]}, {pos_ned[1]}, {pos_ned[2]}
+, REULER={ea:.10f}, {eb:.10f}, {ec:.10f}
+, VX={v_ned[0]:.8f}, VY={v_ned[1]:.8f}, VZ={v_ned[2]:.8f}
+, WX={w_ned[0]:.8f}, WY={w_ned[1]:.8f}, WZ={w_ned[2]:.8f}
+!
+MARKER/201, PART=2, QP=0, 0, 0, REULER=0, 0, 0
+MARKER/202, PART=2, QP={nose_x}, 0, 0
+MARKER/203, PART=2, QP={tail_x}, 0, 0
+MARKER/204, PART=2, QP=0, {semi_span}, 0
+MARKER/205, PART=2, QP=0, {-semi_span}, 0
+!
+! ---- Outputs: CG position in NED, CG velocity in body axes
+REQUEST/1, TITLE=CG position NED
+, F2=DX(201,101,101), F3=DY(201,101,101), F4=DZ(201,101,101)
+REQUEST/2, TITLE=CG velocity body (u v w)
+, F2=VX(201,101,201), F3=VY(201,101,201), F4=VZ(201,101,201)
+!
+END
+"""
+
+with open("aircraft.adm", "w") as f:
+    f.write(adm)
+print(f"aircraft.adm written. REULER (313, rad) = {ea:.6f} {eb:.6f} {ec:.6f}")
