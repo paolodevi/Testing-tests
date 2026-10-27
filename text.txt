@@ -1,96 +1,13 @@
-#!/usr/bin/env python3
-"""Generates aircraft.adm (MSC Adams 2013 Solver dataset).
-
-Frames
-  - Adams global/ground frame IS the NED frame: x = North, y = East, z = Down
-    (so gravity is +z). Marker 101 on ground marks it explicitly.
-  - Marker 201 (at the CG) is the body frame: x = nose, y = right wing, z = down.
-
-Edit the parameters below, run:  python3 gen_aircraft.py
-"""
-import math
-
-# ---------------- PARAMETERS (SI units) ----------------
-mass = 5000.0                       # kg
-Ixx, Iyy, Izz = 8000.0, 20000.0, 25000.0   # kg m^2, about body axes at the CG
-Ixy, Ixz, Iyz = 0.0, 500.0, 0.0     # products of inertia, Ixz = integral(x*z dm)
-
-pos_ned = (0.0, 0.0, -1000.0)       # initial CG position in NED [m] (z = -altitude)
-euler_deg = (0.0, 5.0, 0.0)         # initial yaw(psi), pitch(theta), roll(phi) [deg]
-vel_body = (60.0, 0.0, 0.0)         # initial u, v, w in BODY axes [m/s]
-rates_body = (0.0, 0.0, 0.0)        # initial p, q, r in BODY axes [rad/s]
-
-nose_x, tail_x, semi_span = 6.0, -8.0, 7.0   # marker offsets from CG [m]
-g = 9.80665
-# --------------------------------------------------------
-
-
-def dcm_body_to_ned(psi, theta, phi):
-    """R = Rz(psi) Ry(theta) Rx(phi)  (body -> NED)."""
-    cp, sp = math.cos(psi), math.sin(psi)
-    ct, st = math.cos(theta), math.sin(theta)
-    cf, sf = math.cos(phi), math.sin(phi)
-    return [
-        [cp * ct, cp * st * sf - sp * cf, cp * st * cf + sp * sf],
-        [sp * ct, sp * st * sf + cp * cf, sp * st * cf - cp * sf],
-        [-st,     ct * sf,                ct * cf],
-    ]
-
-
-def euler313(R):
-    """Adams REULER: body-fixed rotations about z, x', z'' (a, b, c) in rad."""
-    b = math.acos(max(-1.0, min(1.0, R[2][2])))
-    if abs(math.sin(b)) < 1e-9:           # singular: pure rotation about z
-        return math.atan2(R[1][0], R[0][0]), b, 0.0
-    a = math.atan2(R[0][2], -R[1][2])
-    c = math.atan2(R[2][0], R[2][1])
-    return a, b, c
-
-
-def mv(R, v):
-    return [sum(R[i][j] * v[j] for j in range(3)) for i in range(3)]
-
-
-psi, theta, phi = (math.radians(x) for x in euler_deg)
-R = dcm_body_to_ned(psi, theta, phi)
-ea, eb, ec = euler313(R)
-v_ned = mv(R, vel_body)
-w_ned = mv(R, rates_body)
-
-adm = f"""aircraft
-!
-UNITS/ FORCE=NEWTON, MASS=KILOGRAM, LENGTH=METER, TIME=SECOND
-!
-! Global frame = NED (x North, y East, z Down) -> gravity along +z
-ACCGRAV/ IGRAV = 0, 0, {g}
-!
-PART/1, GROUND
-MARKER/101, PART=1, QP=0, 0, 0, REULER=0, 0, 0
-!
-! ---- Aircraft rigid body; part frame = body frame (x fwd, y right, z down)
-PART/2, MASS={mass}
-, CM=201
-, IP={Ixx}, {Iyy}, {Izz}, {Ixy}, {Ixz}, {Iyz}
-, QG={pos_ned[0]}, {pos_ned[1]}, {pos_ned[2]}
-, REULER={ea:.10f}, {eb:.10f}, {ec:.10f}
-, VX={v_ned[0]:.8f}, VY={v_ned[1]:.8f}, VZ={v_ned[2]:.8f}
-, WX={w_ned[0]:.8f}, WY={w_ned[1]:.8f}, WZ={w_ned[2]:.8f}
-!
-MARKER/201, PART=2, QP=0, 0, 0, REULER=0, 0, 0
-MARKER/202, PART=2, QP={nose_x}, 0, 0
-MARKER/203, PART=2, QP={tail_x}, 0, 0
-MARKER/204, PART=2, QP=0, {semi_span}, 0
-MARKER/205, PART=2, QP=0, {-semi_span}, 0
-!
-! ---- Outputs: CG position in NED, CG velocity in body axes
-REQUEST/1, TITLE=CG position NED
+! ---- Part 2 outputs, relative to the NED ground marker 101
+REQUEST/1, TITLE=Position NED [m]
 , F2=DX(201,101,101), F3=DY(201,101,101), F4=DZ(201,101,101)
-REQUEST/2, TITLE=CG velocity body (u v w)
-, F2=VX(201,101,201), F3=VY(201,101,201), F4=VZ(201,101,201)
-!
-END
-"""
-
-with open("aircraft.adm", "w") as f:
-    f.write(adm)
-print(f"aircraft.adm written. REULER (313, rad) = {ea:.6f} {eb:.6f} {ec:.6f}")
+REQUEST/2, TITLE=Attitude roll pitch yaw [deg]
+, F2=RTOD*ROLL(201,101), F3=RTOD*PITCH(201,101), F4=RTOD*YAW(201,101)
+REQUEST/3, TITLE=Velocity NED [m/s]
+, F2=VX(201,101,101,101), F3=VY(201,101,101,101), F4=VZ(201,101,101,101)
+REQUEST/4, TITLE=Angular velocity body p q r [rad/s]
+, F2=WX(201,101,201), F3=WY(201,101,201), F4=WZ(201,101,201)
+REQUEST/5, TITLE=Acceleration NED [m/s2]
+, F2=ACCX(201,101,101,101), F3=ACCY(201,101,101,101), F4=ACCZ(201,101,101,101)
+REQUEST/6, TITLE=Angular acceleration body [rad/s2]
+, F2=WDTX(201,101,201), F3=WDTY(201,101,201), F4=WDTZ(201,101,201)
