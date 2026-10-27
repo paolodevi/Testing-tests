@@ -1,13 +1,123 @@
-! ---- Part 2 outputs, relative to the NED ground marker 101
-REQUEST/1, TITLE=Position NED [m]
-, F2=DX(201,101,101), F3=DY(201,101,101), F4=DZ(201,101,101)
-REQUEST/2, TITLE=Attitude roll pitch yaw [deg]
-, F2=RTOD*ROLL(201,101), F3=RTOD*PITCH(201,101), F4=RTOD*YAW(201,101)
-REQUEST/3, TITLE=Velocity NED [m/s]
-, F2=VX(201,101,101,101), F3=VY(201,101,101,101), F4=VZ(201,101,101,101)
-REQUEST/4, TITLE=Angular velocity body p q r [rad/s]
-, F2=WX(201,101,201), F3=WY(201,101,201), F4=WZ(201,101,201)
-REQUEST/5, TITLE=Acceleration NED [m/s2]
-, F2=ACCX(201,101,101,101), F3=ACCY(201,101,101,101), F4=ACCZ(201,101,101,101)
-REQUEST/6, TITLE=Angular acceleration body [rad/s2]
-, F2=WDTX(201,101,201), F3=WDTY(201,101,201), F4=WDTZ(201,101,201)
+function R = read_adams_req(filename, matfile)
+%READ_ADAMS_REQ  Read an Adams solver .req file into a struct.
+%
+%   R = read_adams_req('aircraft.req')
+%   R = read_adams_req('aircraft.req', 'aircraft.mat')   % also saves a .mat
+%
+% No request ids, titles or column counts are hard-coded: the file is split
+% into blocks of consecutive numeric rows, and each block becomes one field
+% of R, so adding/removing/changing REQUESTs needs no change here.
+%
+% A new block starts when: a text line appears, the number of columns
+% changes, or the first column (time) decreases (e.g. a second simulation).
+%
+% Each field R.<name> contains:
+%   .id      request id found in the header text (NaN if not found)
+%   .title   request title (from "TITLE=..." or the last header text line)
+%   .header  all text lines found just before the block
+%   .data    full numeric matrix (rows = output steps)
+%   .time    data(:,1)    (assumes the first column is time)
+%   .values  data(:,2:end)
+%
+% Fields are named after the title; duplicates get a numeric suffix
+% (e.g. static + dynamic results of the same request).
+
+    if nargin < 1 || isempty(filename)
+        error('read_adams_req:noFile', 'Provide the .req file name.');
+    end
+    txt   = fileread(filename);
+    lines = regexp(txt, '\r\n|\n|\r', 'split');
+
+    % number = optional sign, digits/decimal, optional exponent (E, e, D, d)
+    numPat = '[-+]?(?:\d+\.?\d*|\.\d+)(?:[EeDd][-+]?\d+)?';
+
+    R        = struct();
+    names    = {};
+    hdr      = {};        % pending text lines
+    cur      = [];        % rows of the block being built
+    nBlocks  = 0;
+
+    for k = 1:numel(lines)
+        s = lines{k};
+        if isempty(strtrim(s))
+            continue                      % blank lines are neutral
+        end
+
+        vals = parseNumericLine(s, numPat);
+
+        if isempty(vals)                  % text line
+            flush();                      % it closes any open block
+            hdr{end+1} = strtrim(s);      %#ok<AGROW>
+            continue
+        end
+
+        % numeric line: does it continue the current block?
+        if ~isempty(cur) && (numel(vals) ~= size(cur,2) || vals(1) < cur(end,1))
+            flush();
+        end
+        cur(end+1, 1:numel(vals)) = vals; %#ok<AGROW>
+    end
+    flush();
+
+    fprintf('read_adams_req: %d block(s) found in %s\n', nBlocks, filename);
+    for i = 1:numel(names)
+        fprintf('  %-30s %6d rows x %2d cols   (id %s)\n', names{i}, ...
+            size(R.(names{i}).data,1), size(R.(names{i}).data,2), ...
+            num2str(R.(names{i}).id));
+    end
+
+    if nargin >= 2 && ~isempty(matfile)
+        save(matfile, '-struct', 'R');
+        fprintf('Saved %s\n', matfile);
+    end
+
+    % ---------------------------------------------------------------
+    function flush()
+        if isempty(cur), return; end
+        nBlocks = nBlocks + 1;
+
+        htxt = strjoin(hdr, newline);
+        id   = NaN;
+        t    = regexp(htxt, 'REQUEST\s*(?:ID)?\s*[=/:]?\s*(\d+)', 'tokens', 'once', 'ignorecase');
+        if ~isempty(t), id = str2double(t{1}); end
+
+        title = '';
+        t = regexp(htxt, 'TITLE\s*=\s*([^\n,]*)', 'tokens', 'once', 'ignorecase');
+        if ~isempty(t)
+            title = strtrim(t{1});
+        elseif ~isempty(hdr)
+            title = hdr{end};
+        end
+
+        if ~isempty(title)
+            nm = matlab.lang.makeValidName(title);
+        elseif ~isnan(id)
+            nm = sprintf('req%d', id);
+        else
+            nm = sprintf('block%d', nBlocks);
+        end
+        nm = matlab.lang.makeUniqueStrings(nm, names);
+        names{end+1} = nm; %#ok<AGROW>
+
+        R.(nm) = struct('id', id, 'title', title, 'header', {hdr}, ...
+                        'data', cur, 'time', cur(:,1), 'values', cur(:,2:end));
+        cur = [];
+        hdr = {};
+    end
+end
+
+function vals = parseNumericLine(s, numPat)
+% Return the numbers on the line if it contains ONLY numbers, spaces and
+% commas; otherwise return []. Handles Fortran 'D' exponents and numbers
+% glued together by a minus sign (1.0E+00-2.0E+00).
+    vals = [];
+    tok = regexp(s, numPat, 'match');
+    if isempty(tok), return; end
+    rest = regexprep(s, numPat, '');
+    if ~all(isspace(rest) | rest == ',')
+        return
+    end
+    tok  = regexprep(tok, '[Dd]', 'E');
+    vals = str2double(tok);
+    vals = vals(:).';
+end
