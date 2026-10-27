@@ -1,123 +1,108 @@
-function R = read_adams_req(filename, matfile)
-%READ_ADAMS_REQ  Read an Adams solver .req file into a struct.
+function T = read_adams_req(filename, varNames, matfile)
+%READ_ADAMS_REQ  Read an Adams .req file into a MATLAB table.
 %
-%   R = read_adams_req('aircraft.req')
-%   R = read_adams_req('aircraft.req', 'aircraft.mat')   % also saves a .mat
+%   T = read_adams_req('aircraft.req')
+%   T = read_adams_req('aircraft.req', {'x','y','z','roll'})  % own names (no Time)
+%   T = read_adams_req('aircraft.req', [], 'aircraft.mat')    % also save T
 %
-% No request ids, titles or column counts are hard-coded: the file is split
-% into blocks of consecutive numeric rows, and each block becomes one field
-% of R, so adding/removing/changing REQUESTs needs no change here.
+% File layout assumed:
+%   line 3, first number = N  -> number of requests = number of header rows
+%   lines 1..3+N              -> header (skipped)
+%   remaining lines           -> numeric data: Time, then one column per output
 %
-% A new block starts when: a text line appears, the number of columns
-% changes, or the first column (time) decreases (e.g. a second simulation).
-%
-% Each field R.<name> contains:
-%   .id      request id found in the header text (NaN if not found)
-%   .title   request title (from "TITLE=..." or the last header text line)
-%   .header  all text lines found just before the block
-%   .data    full numeric matrix (rows = output steps)
-%   .time    data(:,1)    (assumes the first column is time)
-%   .values  data(:,2:end)
-%
-% Fields are named after the title; duplicates get a numeric suffix
-% (e.g. static + dynamic results of the same request).
+% Result: one row per time step, one column per variable (first = Time).
+% Nothing else is hard-coded, so adding/removing requests needs no change.
 
-    if nargin < 1 || isempty(filename)
-        error('read_adams_req:noFile', 'Provide the .req file name.');
-    end
-    txt   = fileread(filename);
-    lines = regexp(txt, '\r\n|\n|\r', 'split');
+    if nargin < 2, varNames = []; end
+    if nargin < 3, matfile  = []; end
 
-    % number = optional sign, digits/decimal, optional exponent (E, e, D, d)
+    lines  = regexp(fileread(filename), '\r\n|\n|\r', 'split');
     numPat = '[-+]?(?:\d+\.?\d*|\.\d+)(?:[EeDd][-+]?\d+)?';
 
-    R        = struct();
-    names    = {};
-    hdr      = {};        % pending text lines
-    cur      = [];        % rows of the block being built
-    nBlocks  = 0;
+    if numel(lines) < 3
+        error('read_adams_req:short', 'File has fewer than 3 lines.');
+    end
 
-    for k = 1:numel(lines)
+    % --- header size: first number of line 3 --------------------------
+    tok = regexp(lines{3}, numPat, 'match', 'once');
+    if isempty(tok)
+        error('read_adams_req:noCount', ...
+              'No number found on line 3: "%s"', lines{3});
+    end
+    nReq = round(str2double(strrep(strrep(tok,'D','E'),'d','e')));
+    skip = 3 + nReq;
+    if numel(lines) <= skip
+        error('read_adams_req:noData', 'No data after %d header lines.', skip);
+    end
+    header = lines(1:skip);
+
+    % --- numeric rows ---------------------------------------------------
+    rows = {};
+    nIgnored = 0;
+    for k = skip+1:numel(lines)
         s = lines{k};
-        if isempty(strtrim(s))
-            continue                      % blank lines are neutral
-        end
-
-        vals = parseNumericLine(s, numPat);
-
-        if isempty(vals)                  % text line
-            flush();                      % it closes any open block
-            hdr{end+1} = strtrim(s);      %#ok<AGROW>
-            continue
-        end
-
-        % numeric line: does it continue the current block?
-        if ~isempty(cur) && (numel(vals) ~= size(cur,2) || vals(1) < cur(end,1))
-            flush();
-        end
-        cur(end+1, 1:numel(vals)) = vals; %#ok<AGROW>
-    end
-    flush();
-
-    fprintf('read_adams_req: %d block(s) found in %s\n', nBlocks, filename);
-    for i = 1:numel(names)
-        fprintf('  %-30s %6d rows x %2d cols   (id %s)\n', names{i}, ...
-            size(R.(names{i}).data,1), size(R.(names{i}).data,2), ...
-            num2str(R.(names{i}).id));
-    end
-
-    if nargin >= 2 && ~isempty(matfile)
-        save(matfile, '-struct', 'R');
-        fprintf('Saved %s\n', matfile);
-    end
-
-    % ---------------------------------------------------------------
-    function flush()
-        if isempty(cur), return; end
-        nBlocks = nBlocks + 1;
-
-        htxt = strjoin(hdr, newline);
-        id   = NaN;
-        t    = regexp(htxt, 'REQUEST\s*(?:ID)?\s*[=/:]?\s*(\d+)', 'tokens', 'once', 'ignorecase');
-        if ~isempty(t), id = str2double(t{1}); end
-
-        title = '';
-        t = regexp(htxt, 'TITLE\s*=\s*([^\n,]*)', 'tokens', 'once', 'ignorecase');
-        if ~isempty(t)
-            title = strtrim(t{1});
-        elseif ~isempty(hdr)
-            title = hdr{end};
-        end
-
-        if ~isempty(title)
-            nm = matlab.lang.makeValidName(title);
-        elseif ~isnan(id)
-            nm = sprintf('req%d', id);
+        if isempty(strtrim(s)), continue; end
+        v = parseNumericLine(s, numPat);
+        if isempty(v)
+            nIgnored = nIgnored + 1;
         else
-            nm = sprintf('block%d', nBlocks);
+            rows{end+1} = v; %#ok<AGROW>
         end
-        nm = matlab.lang.makeUniqueStrings(nm, names);
-        names{end+1} = nm; %#ok<AGROW>
+    end
+    if isempty(rows)
+        error('read_adams_req:noData', 'No numeric rows found after the header.');
+    end
 
-        R.(nm) = struct('id', id, 'title', title, 'header', {hdr}, ...
-                        'data', cur, 'time', cur(:,1), 'values', cur(:,2:end));
-        cur = [];
-        hdr = {};
+    nc   = numel(rows{1});
+    good = cellfun(@numel, rows) == nc;
+    nIgnored = nIgnored + nnz(~good);
+    M = vertcat(rows{good});
+    if nIgnored > 0
+        warning('read_adams_req:ignored', ...
+            '%d line(s) ignored (not numeric or different column count).', nIgnored);
+    end
+
+    % --- variable names ---------------------------------------------------
+    if isempty(varNames)
+        if nc - 1 == nReq            % one column per header row: use its text
+            varNames = cell(1, nReq);
+            for i = 1:nReq
+                h = header{3 + i};
+                t = regexp(h, 'TITLE\s*=\s*([^,]*)', 'tokens', 'once', 'ignorecase');
+                if ~isempty(t), h = t{1}; end
+                varNames{i} = matlab.lang.makeValidName(strtrim(h));
+            end
+        else
+            varNames = arrayfun(@(i) sprintf('Var%d', i), 1:nc-1, 'UniformOutput', false);
+        end
+    end
+    if numel(varNames) ~= nc - 1
+        error('read_adams_req:names', ...
+              '%d names given but the file has %d data columns after Time.', ...
+              numel(varNames), nc - 1);
+    end
+    allNames = matlab.lang.makeUniqueStrings(['Time', varNames(:).'], {}, namelengthmax);
+
+    T = array2table(M, 'VariableNames', allNames);
+    T.Properties.UserData = struct('header', {header});
+
+    fprintf('read_adams_req: %d requests in header, %d rows x %d columns.\n', ...
+            nReq, size(T,1), size(T,2));
+
+    if ~isempty(matfile)
+        save(matfile, 'T');
+        fprintf('Saved %s\n', matfile);
     end
 end
 
 function vals = parseNumericLine(s, numPat)
-% Return the numbers on the line if it contains ONLY numbers, spaces and
-% commas; otherwise return []. Handles Fortran 'D' exponents and numbers
-% glued together by a minus sign (1.0E+00-2.0E+00).
+% Numbers on the line if it holds ONLY numbers/spaces/commas, else [].
+% Handles Fortran D exponents and numbers glued by a minus sign.
     vals = [];
     tok = regexp(s, numPat, 'match');
     if isempty(tok), return; end
     rest = regexprep(s, numPat, '');
-    if ~all(isspace(rest) | rest == ',')
-        return
-    end
-    tok  = regexprep(tok, '[Dd]', 'E');
-    vals = str2double(tok);
+    if ~all(isspace(rest) | rest == ','), return; end
+    vals = str2double(regexprep(tok, '[Dd]', 'E'));
     vals = vals(:).';
 end
