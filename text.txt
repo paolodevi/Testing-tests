@@ -1,20 +1,24 @@
-function T = read_adams_req(filename, varNames, matfile)
+function T = read_adams_req(filename, varNames, matfile, nVals)
 %READ_ADAMS_REQ  Read an Adams .req file into a MATLAB table.
 %
 %   T = read_adams_req('aircraft.req')
-%   T = read_adams_req('aircraft.req', {'x','y','z','roll'})  % own names (no Time)
-%   T = read_adams_req('aircraft.req', [], 'aircraft.mat')    % also save T
+%   T = read_adams_req('aircraft.req', {'x','y','z',...})   % own names (no Time)
+%   T = read_adams_req('aircraft.req', [], 'aircraft.mat')  % also save T
+%   T = read_adams_req('aircraft.req', [], [], 18)          % force 18 values/step
 %
 % File layout assumed:
-%   line 3, first number = N  -> number of requests = number of header rows
-%   lines 1..3+N              -> header (skipped)
-%   remaining lines           -> numeric data: Time, then one column per output
+%   line 3, first number = N -> header = lines 1..3+N (skipped)
+%   then, for every time step:
+%       <time>                      (a line with a single number)
+%       <values ...>                (one or more lines, any wrapping)
 %
 % Result: one row per time step, one column per variable (first = Time).
-% Nothing else is hard-coded, so adding/removing requests needs no change.
+% The number of values per step is detected automatically (distance between
+% the first two single-number lines); pass nVals to override it.
 
     if nargin < 2, varNames = []; end
     if nargin < 3, matfile  = []; end
+    if nargin < 4, nVals    = []; end
 
     lines  = regexp(fileread(filename), '\r\n|\n|\r', 'split');
     numPat = '[-+]?(?:\d+\.?\d*|\.\d+)(?:[EeDd][-+]?\d+)?';
@@ -26,8 +30,7 @@ function T = read_adams_req(filename, varNames, matfile)
     % --- header size: first number of line 3 --------------------------
     tok = regexp(lines{3}, numPat, 'match', 'once');
     if isempty(tok)
-        error('read_adams_req:noCount', ...
-              'No number found on line 3: "%s"', lines{3});
+        error('read_adams_req:noCount', 'No number found on line 3: "%s"', lines{3});
     end
     nReq = round(str2double(strrep(strrep(tok,'D','E'),'d','e')));
     skip = 3 + nReq;
@@ -36,35 +39,57 @@ function T = read_adams_req(filename, varNames, matfile)
     end
     header = lines(1:skip);
 
-    % --- numeric rows ---------------------------------------------------
-    rows = {};
+    % --- numeric lines after the header ---------------------------------
+    nums = {};
     nIgnored = 0;
     for k = skip+1:numel(lines)
         s = lines{k};
         if isempty(strtrim(s)), continue; end
         v = parseNumericLine(s, numPat);
-        if isempty(v)
-            nIgnored = nIgnored + 1;
+        if isempty(v), nIgnored = nIgnored + 1; else, nums{end+1} = v; end %#ok<AGROW>
+    end
+    if isempty(nums)
+        error('read_adams_req:noData', 'No numeric lines found after the header.');
+    end
+    if nIgnored > 0
+        warning('read_adams_req:ignored', '%d non-numeric line(s) ignored.', nIgnored);
+    end
+
+    counts = cellfun(@numel, nums);
+    stream = [nums{:}];
+
+    % --- values per time step ----------------------------------------------
+    if counts(1) ~= 1
+        warning('read_adams_req:firstLine', ...
+            'First line after the header has %d numbers, expected a single time value.', counts(1));
+    end
+    if isempty(nVals)
+        single = find(counts == 1);
+        if numel(single) >= 2
+            gap = sum(counts(single(1)+1 : single(2)-1));
+            if gap == 0, nVals = 1; else, nVals = gap; end
         else
-            rows{end+1} = v; %#ok<AGROW>
+            nVals = numel(stream) - 1;       % only one time step in the file
         end
     end
-    if isempty(rows)
-        error('read_adams_req:noData', 'No numeric rows found after the header.');
+    stepLen = nVals + 1;
+    nSteps  = floor(numel(stream) / stepLen);
+    if mod(numel(stream), stepLen) ~= 0
+        warning('read_adams_req:truncated', ...
+            '%d numbers do not fill whole steps of %d; last partial step dropped.', ...
+            numel(stream), stepLen);
+    end
+    M = reshape(stream(1:nSteps*stepLen), stepLen, nSteps).';   % steps x (1+nVals)
+
+    if any(diff(M(:,1)) < 0)
+        warning('read_adams_req:timeDecreases', ...
+            ['Time decreases in the data: either several simulations in one ' ...
+             'file (e.g. static + dynamic) or a wrong nVals (%d).'], nVals);
     end
 
-    nc   = numel(rows{1});
-    good = cellfun(@numel, rows) == nc;
-    nIgnored = nIgnored + nnz(~good);
-    M = vertcat(rows{good});
-    if nIgnored > 0
-        warning('read_adams_req:ignored', ...
-            '%d line(s) ignored (not numeric or different column count).', nIgnored);
-    end
-
-    % --- variable names ---------------------------------------------------
+    % --- variable names --------------------------------------------------------
     if isempty(varNames)
-        if nc - 1 == nReq            % one column per header row: use its text
+        if nVals == nReq                     % one value per header row
             varNames = cell(1, nReq);
             for i = 1:nReq
                 h = header{3 + i};
@@ -73,21 +98,20 @@ function T = read_adams_req(filename, varNames, matfile)
                 varNames{i} = matlab.lang.makeValidName(strtrim(h));
             end
         else
-            varNames = arrayfun(@(i) sprintf('Var%d', i), 1:nc-1, 'UniformOutput', false);
+            varNames = arrayfun(@(i) sprintf('Var%d', i), 1:nVals, 'UniformOutput', false);
         end
     end
-    if numel(varNames) ~= nc - 1
+    if numel(varNames) ~= nVals
         error('read_adams_req:names', ...
-              '%d names given but the file has %d data columns after Time.', ...
-              numel(varNames), nc - 1);
+              '%d names given but there are %d values per time step.', numel(varNames), nVals);
     end
     allNames = matlab.lang.makeUniqueStrings(['Time', varNames(:).'], {}, namelengthmax);
 
     T = array2table(M, 'VariableNames', allNames);
     T.Properties.UserData = struct('header', {header});
 
-    fprintf('read_adams_req: %d requests in header, %d rows x %d columns.\n', ...
-            nReq, size(T,1), size(T,2));
+    fprintf('read_adams_req: %d requests in header, %d values per step, %d time steps.\n', ...
+            nReq, nVals, nSteps);
 
     if ~isempty(matfile)
         save(matfile, 'T');
