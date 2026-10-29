@@ -1,132 +1,33 @@
-function T = read_adams_req(filename, varNames, matfile, nVals)
-%READ_ADAMS_REQ  Read an Adams .req file into a MATLAB table.
-%
-%   T = read_adams_req('aircraft.req')
-%   T = read_adams_req('aircraft.req', {'x','y','z',...})   % own names (no Time)
-%   T = read_adams_req('aircraft.req', [], 'aircraft.mat')  % also save T
-%   T = read_adams_req('aircraft.req', [], [], 18)          % force 18 values/step
-%
-% File layout assumed:
-%   line 3, first number = N -> header = lines 1..3+N (skipped)
-%   then, for every time step:
-%       <time>                      (a line with a single number)
-%       <values ...>                (one or more lines, any wrapping)
-%
-% Result: one row per time step, one column per variable (first = Time).
-% The number of values per step is detected automatically (distance between
-% the first two single-number lines); pass nVals to override it.
+      SUBROUTINE EUL2Q(ANGBOD, Q)
+C     Converts Adams B313 Euler angles to a unit quaternion.
+C     ANGBOD(1)=psi, ANGBOD(2)=theta, ANGBOD(3)=phi  [rad]
+C     Q(1)=q0 (scalar), Q(2)=q1, Q(3)=q2, Q(4)=q3
+C     Q describes the rotation body frame -> reference frame
+      DOUBLE PRECISION ANGBOD(3), Q(4)
+      DOUBLE PRECISION PSI, THE, PHI
+      DOUBLE PRECISION CT, ST, SPLUS, SMINUS, QN
 
-    if nargin < 2, varNames = []; end
-    if nargin < 3, matfile  = []; end
-    if nargin < 4, nVals    = []; end
+      PSI = ANGBOD(1)
+      THE = ANGBOD(2)
+      PHI = ANGBOD(3)
 
-    lines  = regexp(fileread(filename), '\r\n|\n|\r', 'split');
-    numPat = '[-+]?(?:\d+\.?\d*|\.\d+)(?:[EeDd][-+]?\d+)?';
+      CT     = DCOS(0.5D0*THE)
+      ST     = DSIN(0.5D0*THE)
+      SPLUS  = 0.5D0*(PSI+PHI)
+      SMINUS = 0.5D0*(PSI-PHI)
 
-    if numel(lines) < 3
-        error('read_adams_req:short', 'File has fewer than 3 lines.');
-    end
+      Q(1) = CT*DCOS(SPLUS)
+      Q(2) = ST*DCOS(SMINUS)
+      Q(3) = ST*DSIN(SMINUS)
+      Q(4) = CT*DSIN(SPLUS)
 
-    % --- header size: first number of line 3 --------------------------
-    tok = regexp(lines{3}, numPat, 'match', 'once');
-    if isempty(tok)
-        error('read_adams_req:noCount', 'No number found on line 3: "%s"', lines{3});
-    end
-    nReq = round(str2double(strrep(strrep(tok,'D','E'),'d','e')));
-    skip = 3 + nReq;
-    if numel(lines) <= skip
-        error('read_adams_req:noData', 'No data after %d header lines.', skip);
-    end
-    header = lines(1:skip);
+C     Optional: normalise (guards against round-off) and keep q0 >= 0
+      QN = DSQRT(Q(1)**2+Q(2)**2+Q(3)**2+Q(4)**2)
+      IF (Q(1) .LT. 0.0D0) QN = -QN
+      Q(1) = Q(1)/QN
+      Q(2) = Q(2)/QN
+      Q(3) = Q(3)/QN
+      Q(4) = Q(4)/QN
 
-    % --- numeric lines after the header ---------------------------------
-    nums = {};
-    nIgnored = 0;
-    for k = skip+1:numel(lines)
-        s = lines{k};
-        if isempty(strtrim(s)), continue; end
-        v = parseNumericLine(s, numPat);
-        if isempty(v), nIgnored = nIgnored + 1; else, nums{end+1} = v; end %#ok<AGROW>
-    end
-    if isempty(nums)
-        error('read_adams_req:noData', 'No numeric lines found after the header.');
-    end
-    if nIgnored > 0
-        warning('read_adams_req:ignored', '%d non-numeric line(s) ignored.', nIgnored);
-    end
-
-    counts = cellfun(@numel, nums);
-    stream = [nums{:}];
-
-    % --- values per time step ----------------------------------------------
-    if counts(1) ~= 1
-        warning('read_adams_req:firstLine', ...
-            'First line after the header has %d numbers, expected a single time value.', counts(1));
-    end
-    if isempty(nVals)
-        single = find(counts == 1);
-        if numel(single) >= 2
-            gap = sum(counts(single(1)+1 : single(2)-1));
-            if gap == 0, nVals = 1; else, nVals = gap; end
-        else
-            nVals = numel(stream) - 1;       % only one time step in the file
-        end
-    end
-    stepLen = nVals + 1;
-    nSteps  = floor(numel(stream) / stepLen);
-    if mod(numel(stream), stepLen) ~= 0
-        warning('read_adams_req:truncated', ...
-            '%d numbers do not fill whole steps of %d; last partial step dropped.', ...
-            numel(stream), stepLen);
-    end
-    M = reshape(stream(1:nSteps*stepLen), stepLen, nSteps).';   % steps x (1+nVals)
-
-    if any(diff(M(:,1)) < 0)
-        warning('read_adams_req:timeDecreases', ...
-            ['Time decreases in the data: either several simulations in one ' ...
-             'file (e.g. static + dynamic) or a wrong nVals (%d).'], nVals);
-    end
-
-    % --- variable names --------------------------------------------------------
-    if isempty(varNames)
-        if nVals == nReq                     % one value per header row
-            varNames = cell(1, nReq);
-            for i = 1:nReq
-                h = header{3 + i};
-                t = regexp(h, 'TITLE\s*=\s*([^,]*)', 'tokens', 'once', 'ignorecase');
-                if ~isempty(t), h = t{1}; end
-                varNames{i} = matlab.lang.makeValidName(strtrim(h));
-            end
-        else
-            varNames = arrayfun(@(i) sprintf('Var%d', i), 1:nVals, 'UniformOutput', false);
-        end
-    end
-    if numel(varNames) ~= nVals
-        error('read_adams_req:names', ...
-              '%d names given but there are %d values per time step.', numel(varNames), nVals);
-    end
-    allNames = matlab.lang.makeUniqueStrings(['Time', varNames(:).'], {}, namelengthmax);
-
-    T = array2table(M, 'VariableNames', allNames);
-    T.Properties.UserData = struct('header', {header});
-
-    fprintf('read_adams_req: %d requests in header, %d values per step, %d time steps.\n', ...
-            nReq, nVals, nSteps);
-
-    if ~isempty(matfile)
-        save(matfile, 'T');
-        fprintf('Saved %s\n', matfile);
-    end
-end
-
-function vals = parseNumericLine(s, numPat)
-% Numbers on the line if it holds ONLY numbers/spaces/commas, else [].
-% Handles Fortran D exponents and numbers glued by a minus sign.
-    vals = [];
-    tok = regexp(s, numPat, 'match');
-    if isempty(tok), return; end
-    rest = regexprep(s, numPat, '');
-    if ~all(isspace(rest) | rest == ','), return; end
-    vals = str2double(regexprep(tok, '[Dd]', 'E'));
-    vals = vals(:).';
-end
+      RETURN
+      END
