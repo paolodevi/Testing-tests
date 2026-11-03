@@ -1,33 +1,137 @@
-      SUBROUTINE EUL2Q(ANGBOD, Q)
-C     Converts Adams B313 Euler angles to a unit quaternion.
-C     ANGBOD(1)=psi, ANGBOD(2)=theta, ANGBOD(3)=phi  [rad]
-C     Q(1)=q0 (scalar), Q(2)=q1, Q(3)=q2, Q(4)=q3
-C     Q describes the rotation body frame -> reference frame
-      DOUBLE PRECISION ANGBOD(3), Q(4)
-      DOUBLE PRECISION PSI, THE, PHI
-      DOUBLE PRECISION CT, ST, SPLUS, SMINUS, QN
 
-      PSI = ANGBOD(1)
-      THE = ANGBOD(2)
-      PHI = ANGBOD(3)
+import h5py
+import numpy as np
 
-      CT     = DCOS(0.5D0*THE)
-      ST     = DSIN(0.5D0*THE)
-      SPLUS  = 0.5D0*(PSI+PHI)
-      SMINUS = 0.5D0*(PSI-PHI)
 
-      Q(1) = CT*DCOS(SPLUS)
-      Q(2) = ST*DCOS(SMINUS)
-      Q(3) = ST*DSIN(SMINUS)
-      Q(4) = CT*DSIN(SPLUS)
+class H5Explorer:
 
-C     Optional: normalise (guards against round-off) and keep q0 >= 0
-      QN = DSQRT(Q(1)**2+Q(2)**2+Q(3)**2+Q(4)**2)
-      IF (Q(1) .LT. 0.0D0) QN = -QN
-      Q(1) = Q(1)/QN
-      Q(2) = Q(2)/QN
-      Q(3) = Q(3)/QN
-      Q(4) = Q(4)/QN
+    def __init__(self, filename):
+        self.filename = filename
+        self.file = None
 
-      RETURN
-      END
+    def open(self):
+        self.file = h5py.File(self.filename, "r")
+        print(f"\nOpened: {self.filename}")
+
+    def close(self):
+        if self.file is not None:
+            self.file.close()
+            print("File closed.")
+
+    # --------------------------------------------------
+    # Print complete HDF5 structure
+    # --------------------------------------------------
+    def show_structure(self):
+
+        print(f"\nHDF5 STRUCTURE: {self.filename}\n")
+
+        def visitor(name, obj):
+
+            depth = name.count("/")
+            indent = "    " * depth
+
+            if isinstance(obj, h5py.Group):
+                print(f"{indent}[GROUP] {name}")
+
+            elif isinstance(obj, h5py.Dataset):
+
+                print(
+                    f"{indent}[DATASET] {name} | "
+                    f"Shape: {obj.shape} | "
+                    f"Type: {obj.dtype} | "
+                    f"Size: {obj.size}"
+                )
+
+        self.file.visititems(visitor)
+
+    # --------------------------------------------------
+    # Display attributes
+    # --------------------------------------------------
+    def show_attributes(self, path="/"):
+
+        obj = self.file[path]
+
+        print(f"\nATTRIBUTES: {path}")
+
+        if len(obj.attrs) == 0:
+            print("No attributes found.")
+            return
+
+        for key, value in obj.attrs.items():
+            print(f"{key}: {value}")
+
+    # --------------------------------------------------
+    # Preview dataset
+    # --------------------------------------------------
+    def preview(self, path, n=10):
+
+        dataset = self.file[path]
+
+        if not isinstance(dataset, h5py.Dataset):
+            print("Selected object is not a dataset.")
+            return
+
+        print(f"\nDATASET: {path}")
+        print(f"Shape: {dataset.shape}")
+        print(f"Type: {dataset.dtype}")
+
+        if dataset.ndim == 0:
+            print(dataset[()])
+
+        elif dataset.ndim == 1:
+            print(dataset[:n])
+
+        else:
+            print(dataset[tuple(
+                slice(0, min(s, n)) for s in dataset.shape
+            )])
+
+    # --------------------------------------------------
+    # Load dataset into NumPy
+    # --------------------------------------------------
+    def load(self, path):
+
+        dataset = self.file[path]
+
+        if not isinstance(dataset, h5py.Dataset):
+            raise TypeError(f"{path} is not a dataset.")
+
+        return dataset[()]
+
+    # --------------------------------------------------
+    # Search datasets
+    # --------------------------------------------------
+    def search(self, keyword):
+
+        print(f"\nSEARCH RESULTS: {keyword}")
+
+        def visitor(name, obj):
+
+            if isinstance(obj, h5py.Dataset):
+                if keyword.lower() in name.lower():
+                    print(f"{name} | {obj.shape} | {obj.dtype}")
+
+        self.file.visititems(visitor)
+
+
+# ======================================================
+# MAIN
+# ======================================================
+
+if __name__ == "__main__":
+
+    filename = "simulation.h5"
+
+    explorer = H5Explorer(filename)
+
+    explorer.open()
+
+    explorer.show_structure()
+
+    # Example operations
+    # explorer.show_attributes("/Aircraft")
+    # explorer.preview("/Aircraft/Position/X")
+    # x = explorer.load("/Aircraft/Position/X")
+    # explorer.search("Position")
+
+    explorer.close()
