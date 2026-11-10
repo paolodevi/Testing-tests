@@ -1,204 +1,53 @@
-#!/usr/bin/env python3
-"""
-render_adm.py - fill an Adams template (.adm) with numeric values.
+%% explore_sqlite.m
+% Opens an SQLite database, lists all tables, shows their structure,
+% row counts and a preview, and loads everything into the struct "data".
+% Requires: Database Toolbox (sqlite() function, R2018b+).
 
-Placeholders in the template look like  __name__  (e.g. __mass__, __Xcg__).
-Dictionary keys are the names WITHOUT the double underscores.
+dbfile = 'test.db3';   % change path if needed
 
-Use from your trim script:
+conn = sqlite(dbfile, 'readonly');
+cleanupObj = onCleanup(@() close(conn));   % closes DB even on error
 
-    from render_adm import render_template
+% --- 1) List all tables and views
+res = fetch(conn, ...
+    "SELECT name, type FROM sqlite_master " + ...
+    "WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'");
+if istable(res)
+    names = string(res{:,1});
+else
+    names = string(res(:,1));
+end
 
-    values = {"mass": 45000.0, "Xcg": 12.3, "Ycg": 0.0, "Zcg": -0.4}
-    render_template("model_template.adm", "model.adm", values)
+fprintf('Found %d table(s)/view(s):\n', numel(names));
+fprintf('  - %s\n', names);
 
-Or from the command line (values in a JSON file):
+% --- 2) Inspect each table
+data = struct();
+for k = 1:numel(names)
+    t = names(k);
+    fprintf('\n==================== %s ====================\n', t);
 
-    python render_adm.py model_template.adm model.adm trim.json
+    % Column info (cid, name, type, notnull, default, pk)
+    info = fetch(conn, "PRAGMA table_info('" + t + "')");
+    disp(info);
 
-Behaviour
-- Every placeholder in the template must have a value, otherwise it stops
-  (listing the missing names, line numbers and close-name suggestions).
-- Values must be finite numbers (ints, floats, numpy scalars). No strings.
-- Placeholders inside Adams comments (text after '!') are ignored.
-- Numbers always contain a decimal point or exponent (250 -> 250.0).
-- Any leftover '__' in a non-comment part of the output is an error.
-- Warns if a line gets longer than max_line_len (Adams datasets have a
-  line-length limit, 80 characters; check your version) or if you pass values
-  the template does not use.
-- The output is written atomically; the template is never overwritten.
-"""
-from __future__ import annotations
+    % Row count
+    n = fetch(conn, "SELECT COUNT(*) FROM """ + t + """");
+    if istable(n), n = n{1,1}; elseif iscell(n), n = n{1}; end
+    fprintf('Rows: %d\n', n);
 
-import argparse
-import difflib
-import json
-import math
-import os
-import re
-import sys
-import tempfile
-import warnings
-from pathlib import Path
+    % Load full table
+    tbl = fetch(conn, "SELECT * FROM """ + t + """");
+    if iscell(tbl)   % older releases return a cell array
+        cols = fetch(conn, "PRAGMA table_info('" + t + "')");
+        if istable(cols), cn = string(cols{:,2}); else, cn = string(cols(:,2)); end
+        tbl = cell2table(tbl, 'VariableNames', matlab.lang.makeValidName(cn));
+    end
+    data.(matlab.lang.makeValidName(t)) = tbl;
 
-PLACEHOLDER = re.compile(r"__([A-Za-z]\w*?)__")
-COMMENT_CHAR = "!"
+    % Preview first rows
+    disp(head(tbl, min(10, height(tbl))));
+end
 
-
-class TemplateError(Exception):
-    """Raised for any problem with the template or the supplied values."""
-
-
-def _split_comment(line: str) -> tuple[str, str]:
-    i = line.find(COMMENT_CHAR)
-    return (line, "") if i < 0 else (line[:i], line[i:])
-
-
-def _normalize_keys(values: dict) -> dict:
-    """Accept both 'mass' and '__mass__' as keys."""
-    out = {}
-    for key, val in values.items():
-        k = str(key)
-        if k.startswith("__") and k.endswith("__") and len(k) > 4:
-            k = k[2:-2]
-        if k in out:
-            raise TemplateError(f"Duplicate value for placeholder '{k}'")
-        out[k] = val
-    return out
-
-
-def _format_number(name: str, value, fmt: str) -> str:
-    if isinstance(value, (str, bytes, bool)):
-        raise TemplateError(
-            f"Value for '{name}' must be a number, got "
-            f"{type(value).__name__}: {value!r}"
-        )
-    try:
-        x = float(value)
-    except (TypeError, ValueError) as exc:
-        raise TemplateError(f"Value for '{name}' is not a number: {value!r}") from exc
-    if not math.isfinite(x):
-        raise TemplateError(f"Value for '{name}' is not finite: {value!r}")
-    if x == 0:
-        x = 0.0  # avoid '-0'
-    s = format(x, fmt)
-    if re.fullmatch(r"[+-]?\d+", s):
-        s += ".0"
-    return s
-
-
-def render_template(
-    template_path,
-    output_path,
-    values: dict,
-    *,
-    fmt: str = ".12g",
-    formats: dict | None = None,
-    strict_unused: bool = False,
-    max_line_len: int | None = 80,
-) -> dict:
-    """Substitute placeholders and write the result. Returns {name: text}."""
-    template_path, output_path = Path(template_path), Path(output_path)
-    if template_path.resolve() == output_path.resolve():
-        raise TemplateError("Output path is the same as the template path.")
-
-    values = _normalize_keys(values)
-    formats = formats or {}
-
-    with open(template_path, "r", encoding="utf-8",
-              errors="surrogateescape", newline="") as f:
-        lines = f.read().splitlines(keepends=True)
-
-    # 1) find all placeholders (outside comments)
-    found: dict[str, list[int]] = {}
-    for n, line in enumerate(lines, 1):
-        code, _ = _split_comment(line)
-        for m in PLACEHOLDER.finditer(code):
-            found.setdefault(m.group(1), []).append(n)
-
-    # 2) every placeholder needs a value
-    missing = sorted(set(found) - set(values))
-    if missing:
-        lower = {k.lower(): k for k in values}
-        msgs = []
-        for name in missing:
-            hint = difflib.get_close_matches(name.lower(), list(lower), n=1)
-            extra = f"  (did you mean '{lower[hint[0]]}'?)" if hint else ""
-            lns = ", ".join(map(str, found[name][:5]))
-            msgs.append(f"  {name}: line(s) {lns}{extra}")
-        raise TemplateError("No value for placeholder(s):\n" + "\n".join(msgs))
-
-    unused = sorted(set(values) - set(found))
-    if unused:
-        msg = f"Values not used by the template: {', '.join(unused)}"
-        if strict_unused:
-            raise TemplateError(msg)
-        warnings.warn(msg)
-
-    # 3) convert all numbers up front (fail before writing anything)
-    rendered = {
-        name: _format_number(name, values[name], formats.get(name, fmt))
-        for name in found
-    }
-
-    # 4) substitute line by line
-    out, too_long = [], []
-    for n, line in enumerate(lines, 1):
-        code, comment = _split_comment(line)
-        new_code = PLACEHOLDER.sub(lambda m: rendered[m.group(1)], code)
-        if "__" in new_code:
-            raise TemplateError(
-                f"Line {n}: '__' left after substitution (malformed placeholder?): "
-                f"{new_code.strip()!r}"
-            )
-        new_line = new_code + comment
-        if max_line_len and len(new_line.rstrip("\r\n")) > max_line_len:
-            too_long.append(n)
-        out.append(new_line)
-
-    if too_long:
-        warnings.warn(
-            f"Output line(s) longer than {max_line_len} characters: "
-            f"{too_long[:10]}. Shorten with a smaller fmt (e.g. '.8g') "
-            f"or continue the line with a trailing comma."
-        )
-
-    # 5) atomic write
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=output_path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8",
-                       errors="surrogateescape", newline="") as f:
-            f.writelines(out)
-        os.replace(tmp, output_path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-    return rendered
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser(description="Fill an Adams .adm template.")
-    ap.add_argument("template")
-    ap.add_argument("output")
-    ap.add_argument("values_json", help="JSON file: {\"mass\": 1000.0, ...}")
-    ap.add_argument("--fmt", default=".12g", help="number format (default .12g)")
-    ap.add_argument("--strict", action="store_true",
-                    help="error if a value is not used by the template")
-    args = ap.parse_args()
-
-    with open(args.values_json, encoding="utf-8") as f:
-        values = json.load(f)
-    try:
-        rendered = render_template(args.template, args.output, values,
-                                   fmt=args.fmt, strict_unused=args.strict)
-    except TemplateError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    print(f"Wrote {args.output} ({len(rendered)} placeholders filled)")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+fprintf('\nDone. All tables are in the struct "data", e.g. data.%s\n', ...
+    matlab.lang.makeValidName(names(1)));
