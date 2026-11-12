@@ -1,53 +1,17 @@
-%% explore_sqlite.m
-% Opens an SQLite database, lists all tables, shows their structure,
-% row counts and a preview, and loads everything into the struct "data".
-% Requires: Database Toolbox (sqlite() function, R2018b+).
+% plot_stl.m
+filename = 'model.stl';   % <-- your STL file
 
-dbfile = 'test.db3';   % change path if needed
+% Read STL (requires R2018b+; stlread returns a triangulation object)
+TR = stlread(filename);
 
-conn = sqlite(dbfile, 'readonly');
-cleanupObj = onCleanup(@() close(conn));   % closes DB even on error
+figure('Color','w');
+trisurf(TR, 'FaceColor',[0.7 0.75 0.85], 'EdgeColor','none', ...
+        'FaceLighting','gouraud', 'SpecularStrength',0.3);
 
-% --- 1) List all tables and views
-res = fetch(conn, ...
-    "SELECT name, type FROM sqlite_master " + ...
-    "WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'");
-if istable(res)
-    names = string(res{:,1});
-else
-    names = string(res(:,1));
-end
-
-fprintf('Found %d table(s)/view(s):\n', numel(names));
-fprintf('  - %s\n', names);
-
-% --- 2) Inspect each table
-data = struct();
-for k = 1:numel(names)
-    t = names(k);
-    fprintf('\n==================== %s ====================\n', t);
-
-    % Column info (cid, name, type, notnull, default, pk)
-    info = fetch(conn, "PRAGMA table_info('" + t + "')");
-    disp(info);
-
-    % Row count
-    n = fetch(conn, "SELECT COUNT(*) FROM """ + t + """");
-    if istable(n), n = n{1,1}; elseif iscell(n), n = n{1}; end
-    fprintf('Rows: %d\n', n);
-
-    % Load full table
-    tbl = fetch(conn, "SELECT * FROM """ + t + """");
-    if iscell(tbl)   % older releases return a cell array
-        cols = fetch(conn, "PRAGMA table_info('" + t + "')");
-        if istable(cols), cn = string(cols{:,2}); else, cn = string(cols(:,2)); end
-        tbl = cell2table(tbl, 'VariableNames', matlab.lang.makeValidName(cn));
-    end
-    data.(matlab.lang.makeValidName(t)) = tbl;
-
-    % Preview first rows
-    disp(head(tbl, min(10, height(tbl))));
-end
-
-fprintf('\nDone. All tables are in the struct "data", e.g. data.%s\n', ...
-    matlab.lang.makeValidName(names(1)));
+axis equal; grid on;
+xlabel('X'); ylabel('Y'); zlabel('Z');
+view(3);
+camlight headlight;
+lighting gouraud;
+title(filename, 'Interpreter','none');
+rotate3d on;
